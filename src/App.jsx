@@ -1,4 +1,4 @@
-import React, { useState, useCallback, memo, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, memo, useEffect, useMemo, useRef } from 'react';
 import { BarChart, Bar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart, Pie, Legend, LineChart, Line, ScatterChart, Scatter } from 'recharts';
 
 // Datadog Logo (Bits) - embedded as base64 for portability
@@ -1270,7 +1270,7 @@ const DatadogLogo = () => (
 
 // IMPORTANT: ManualFieldInput is defined OUTSIDE ManualMetricsForm so it doesn't
 // get recreated on every parent re-render (which would cause input focus loss on every keystroke).
-const ManualFieldInput = memo(({ field, label, help, value, onChange }) => {
+const ManualFieldInput = memo(({ field, label, help, value, onChange, onShowInPDF, hasPdfSource }) => {
   const handleInputChange = useCallback((e) => {
     onChange(field, e.target.value);
   }, [field, onChange]);
@@ -1283,17 +1283,61 @@ const ManualFieldInput = memo(({ field, label, help, value, onChange }) => {
     e.target.style.borderColor = '#d1d5db';
   }, []);
   
+  const handleShowClick = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (onShowInPDF) onShowInPDF(field);
+  }, [field, onShowInPDF]);
+  
   return (
     <div>
-      <label style={{ 
-        display: 'block', 
-        fontSize: '0.8125rem', 
-        fontWeight: '500', 
-        color: '#374151', 
-        marginBottom: '0.375rem' 
+      <div style={{ 
+        display: 'flex', 
+        alignItems: 'center', 
+        justifyContent: 'space-between',
+        marginBottom: '0.375rem',
+        minHeight: '20px'
       }}>
-        {label}
-      </label>
+        <label style={{ 
+          fontSize: '0.8125rem', 
+          fontWeight: '500', 
+          color: '#374151'
+        }}>
+          {label}
+        </label>
+        {hasPdfSource && (
+          <button
+            type="button"
+            onClick={handleShowClick}
+            style={{
+              background: '#eff6ff',
+              color: '#1e40af',
+              border: '1px solid #bfdbfe',
+              fontSize: '0.6875rem',
+              fontWeight: '600',
+              padding: '0.125rem 0.5rem',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.25rem',
+              lineHeight: 1,
+              transition: 'all 0.15s'
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = '#dbeafe';
+              e.currentTarget.style.borderColor = '#60a5fa';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = '#eff6ff';
+              e.currentTarget.style.borderColor = '#bfdbfe';
+            }}
+          >
+            <span style={{ pointerEvents: 'none' }}>👁️</span>
+            <span style={{ pointerEvents: 'none' }}>PDF</span>
+          </button>
+        )}
+      </div>
       <input
         type="text"
         value={value}
@@ -1316,7 +1360,280 @@ const ManualFieldInput = memo(({ field, label, help, value, onChange }) => {
   );
 });
 
-const ManualMetricsForm = memo(({ manualData, setManualData, language }) => {
+// ============================================================================
+// FIELD_PDF_MAP — Maps each manual field to its PDF source, page, and
+// approximate vertical region where the value is shown.
+// ============================================================================
+// - sourceKey: which uploaded file to open ('healthCheck', 'monitorQuality', 'platformUtilization')
+// - page: 1-indexed page number
+// - yPercent: approximate vertical position (0-100%) where the field value appears
+//             (used to scroll-to; -1 means scroll to top of page)
+// - locator: text description of what the CSM should look for
+// ============================================================================
+const FIELD_PDF_MAP = {
+  // Health Check Lite - 5 pages
+  infraHostsAvg: { sourceKey: 'healthCheck', page: 1, yPercent: 30, locator: { pt: 'Tabela "Infra and APM Hosts last month" → coluna AVG', en: 'Table "Infra and APM Hosts last month" → AVG column' } },
+  apmHostsAvg: { sourceKey: 'healthCheck', page: 1, yPercent: 30, locator: { pt: 'Tabela "Infra and APM Hosts last month" → linha APM, coluna AVG', en: 'Table "Infra and APM Hosts last month" → APM row, AVG column' } },
+  agentImplementationRate: { sourceKey: 'healthCheck', page: 1, yPercent: 60, locator: { pt: 'Bloco verde "Agent instrumentation ratio last month" → número gigante', en: 'Green block "Agent instrumentation ratio last month" → big number' } },
+  hostsWithEnvTag: { sourceKey: 'healthCheck', page: 1, yPercent: 78, locator: { pt: 'Bloco verde "Host agents with env tag" → número gigante', en: 'Green block "Host agents with env tag" → big number' } },
+  percentageLogsCorrelated: { sourceKey: 'healthCheck', page: 2, yPercent: 90, locator: { pt: 'Bloco laranja "Percentage of Logs Correlated with APM Services" → número gigante', en: 'Orange block "Percentage of Logs Correlated with APM Services" → big number' } },
+  ingestedLogsProcessedByPipeline: { sourceKey: 'healthCheck', page: 3, yPercent: 15, locator: { pt: 'Bloco verde "Ingested logs processed by pipeline" → número gigante', en: 'Green block "Ingested logs processed by pipeline" → big number' } },
+  logsExcludedByExclusion: { sourceKey: 'healthCheck', page: 3, yPercent: 60, locator: { pt: 'Bloco verde "Log events excluded by exclusion filters" → número gigante', en: 'Green block "Log events excluded by exclusion filters" → big number' } },
+  rumAsyncRequestEvents: { sourceKey: 'healthCheck', page: 4, yPercent: 20, locator: { pt: 'Bloco "RUM async request events with APM traces" (pode estar vazio)', en: 'Block "RUM async request events with APM traces" (may be empty)' } },
+  rumSessionsWithUserID: { sourceKey: 'healthCheck', page: 4, yPercent: 35, locator: { pt: 'Bloco "RUM sessions with User ID" (pode estar vazio)', en: 'Block "RUM sessions with User ID" (may be empty)' } },
+  
+  // Monitor Quality - 2 pages
+  healthyMonitors: { sourceKey: 'monitorQuality', page: 1, yPercent: 12, locator: { pt: 'Canto superior esquerdo: "N Healthy monitors"', en: 'Top-left: "N Healthy monitors"' } },
+  monitorsToImprove: { sourceKey: 'monitorQuality', page: 1, yPercent: 12, locator: { pt: 'Canto superior direito: "N Monitors to improve"', en: 'Top-right: "N Monitors to improve"' } },
+  monitorsWithHighAlerts: { sourceKey: 'monitorQuality', page: 1, yPercent: 22, locator: { pt: 'Seção "N monitors are generating a high volume of alerts"', en: 'Section "N monitors are generating a high volume of alerts"' } },
+  monitorsMissingRecipients: { sourceKey: 'monitorQuality', page: 1, yPercent: 45, locator: { pt: 'Seção "N monitors have missing recipients"', en: 'Section "N monitors have missing recipients"' } },
+  monitorsMissingDelay: { sourceKey: 'monitorQuality', page: 1, yPercent: 68, locator: { pt: 'Seção "N monitors are missing a delay"', en: 'Section "N monitors are missing a delay"' } },
+  monitorsMuted60Days: { sourceKey: 'monitorQuality', page: 1, yPercent: 88, locator: { pt: 'Seção "N monitors have been muted for more than 60 days"', en: 'Section "N monitors have been muted for more than 60 days"' } },
+  monitorsMisconfiguredChannels: { sourceKey: 'monitorQuality', page: 2, yPercent: 10, locator: { pt: 'Seção "N monitors have misconfigured notification channels"', en: 'Section "N monitors have misconfigured notification channels"' } },
+  monitorsInAlertOver7Days: { sourceKey: 'monitorQuality', page: 2, yPercent: 45, locator: { pt: 'Seção "N monitors have been in alert for more than 7 days"', en: 'Section "N monitors have been in alert for more than 7 days"' } },
+  
+  // Platform Utilization - 1 page
+  timeSpentDays: { sourceKey: 'platformUtilization', page: 1, yPercent: 10, locator: { pt: 'Primeiro bloco grande: "Time Spent In Platform" → N days', en: 'First big block: "Time Spent In Platform" → N days' } },
+  totalActiveUsers: { sourceKey: 'platformUtilization', page: 1, yPercent: 10, locator: { pt: 'Segundo bloco grande: "Total & Concurrent Active Users" → número gigante', en: 'Second big block: "Total & Concurrent Active Users" → big number' } },
+  avgUsagePerUser: { sourceKey: 'platformUtilization', page: 1, yPercent: 10, locator: { pt: 'Quarto bloco: "AVG Usage / user" → N hr', en: 'Fourth block: "AVG Usage / user" → N hr' } }
+};
+
+// ============================================================================
+// PDFPreviewModal — Renders a PDF page as image and highlights the region
+// where the field's value should be found. Uses pdfjs-dist (already loaded).
+// ============================================================================
+function PDFPreviewModal({ open, file, page, yPercent, fieldLabel, locator, onClose, language }) {
+  const canvasRef = useRef(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  
+  useEffect(() => {
+    if (!open || !file) return;
+    
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    
+    const renderPdf = async () => {
+      try {
+        // Load pdfjs-dist from CDN if not already loaded
+        if (typeof window.pdfjsLib === 'undefined') {
+          await new Promise((resolve, reject) => {
+            const script = document.createElement('script');
+            script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+            script.onload = () => {
+              window.pdfjsLib.GlobalWorkerOptions.workerSrc = 
+                'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+              resolve();
+            };
+            script.onerror = () => reject(new Error('Failed to load PDF library'));
+            document.head.appendChild(script);
+          });
+        }
+        
+        if (cancelled) return;
+        
+        const arrayBuffer = await file.arrayBuffer();
+        const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        
+        if (cancelled) return;
+        if (page > pdf.numPages) {
+          throw new Error(`Page ${page} not found (PDF has ${pdf.numPages} pages)`);
+        }
+        
+        const pdfPage = await pdf.getPage(page);
+        const viewport = pdfPage.getViewport({ scale: 1.5 });
+        
+        if (cancelled) return;
+        
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        
+        const context = canvas.getContext('2d');
+        await pdfPage.render({ canvasContext: context, viewport }).promise;
+        
+        if (cancelled) return;
+        setLoading(false);
+        
+        // Scroll to the Y region after render
+        setTimeout(() => {
+          if (cancelled) return;
+          const container = canvas.parentElement;
+          if (container && yPercent >= 0) {
+            const targetY = (canvas.height * yPercent / 100) - (container.clientHeight / 3);
+            container.scrollTop = Math.max(0, targetY);
+          }
+        }, 100);
+      } catch (err) {
+        if (!cancelled) {
+          console.error('PDF render error:', err);
+          setError(err.message);
+          setLoading(false);
+        }
+      }
+    };
+    
+    renderPdf();
+    return () => { cancelled = true; };
+  }, [open, file, page, yPercent]);
+  
+  if (!open) return null;
+  
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0, 0, 0, 0.7)',
+        display: 'flex',
+        alignItems: 'stretch',
+        justifyContent: 'flex-end',
+        zIndex: 1500
+      }}
+      onClick={onClose}
+    >
+      <div
+        style={{
+          background: 'white',
+          width: '720px',
+          maxWidth: '90vw',
+          height: '100vh',
+          display: 'flex',
+          flexDirection: 'column',
+          boxShadow: '-10px 0 30px rgba(0, 0, 0, 0.3)'
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div style={{
+          background: 'linear-gradient(135deg, #632CA6 0%, #8b5cf6 100%)',
+          color: 'white',
+          padding: '1.25rem 1.5rem',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'flex-start',
+          gap: '1rem'
+        }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: '0.75rem', opacity: 0.9, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.25rem' }}>
+              {language === 'pt' ? `Página ${page}` : `Page ${page}`}
+            </div>
+            <div style={{ fontSize: '1rem', fontWeight: '600', marginBottom: '0.5rem' }}>
+              {fieldLabel}
+            </div>
+            <div style={{ fontSize: '0.8125rem', opacity: 0.95, background: 'rgba(255, 255, 255, 0.15)', padding: '0.5rem 0.75rem', borderRadius: '6px', lineHeight: '1.4' }}>
+              📍 {locator}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            style={{
+              background: 'rgba(255,255,255,0.2)',
+              color: 'white',
+              border: 'none',
+              width: '32px',
+              height: '32px',
+              borderRadius: '50%',
+              cursor: 'pointer',
+              fontSize: '1.25rem',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0
+            }}
+            title={language === 'pt' ? 'Fechar' : 'Close'}
+          >
+            ×
+          </button>
+        </div>
+        
+        {/* PDF Canvas Container */}
+        <div style={{
+          flex: 1,
+          overflow: 'auto',
+          background: '#f3f4f6',
+          padding: '1rem',
+          position: 'relative'
+        }}>
+          {loading && (
+            <div style={{ 
+              position: 'absolute', 
+              inset: 0, 
+              display: 'flex', 
+              alignItems: 'center', 
+              justifyContent: 'center',
+              color: '#6b7280',
+              fontSize: '0.875rem'
+            }}>
+              {language === 'pt' ? '⏳ Carregando PDF...' : '⏳ Loading PDF...'}
+            </div>
+          )}
+          {error && (
+            <div style={{
+              background: '#fef2f2',
+              border: '1px solid #fecaca',
+              borderRadius: '8px',
+              padding: '1rem',
+              color: '#991b1b',
+              fontSize: '0.875rem'
+            }}>
+              ⚠️ {error}
+            </div>
+          )}
+          {!error && (
+            <div style={{ position: 'relative', display: 'inline-block' }}>
+              <canvas 
+                ref={canvasRef} 
+                style={{ 
+                  display: 'block',
+                  maxWidth: '100%',
+                  height: 'auto',
+                  boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)'
+                }}
+              />
+              {/* Highlight overlay at yPercent position */}
+              {!loading && yPercent >= 0 && canvasRef.current && (
+                <div style={{
+                  position: 'absolute',
+                  left: 0,
+                  right: 0,
+                  top: `${yPercent}%`,
+                  height: '80px',
+                  transform: 'translateY(-40px)',
+                  border: '3px solid #fbbf24',
+                  background: 'rgba(251, 191, 36, 0.15)',
+                  pointerEvents: 'none',
+                  borderRadius: '4px',
+                  boxShadow: '0 0 0 4px rgba(251, 191, 36, 0.3)'
+                }}>
+                  <div style={{
+                    position: 'absolute',
+                    top: '-28px',
+                    left: '0',
+                    background: '#fbbf24',
+                    color: '#78350f',
+                    fontSize: '0.75rem',
+                    fontWeight: '700',
+                    padding: '0.25rem 0.625rem',
+                    borderRadius: '4px 4px 0 0',
+                    letterSpacing: '0.05em'
+                  }}>
+                    {language === 'pt' ? '👉 PROCURE AQUI' : '👉 LOOK HERE'}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const ManualMetricsForm = memo(({ manualData, setManualData, language, uploadedFiles, monitorQualityParseStatus, platformUtilizationParseStatus, healthCheckParseStatus }) => {
   // Stable callback: updates specific field without recreating on every render.
   // useCallback with [setManualData] dependency ensures this function reference
   // is stable across renders, so ManualFieldInput (memoized) doesn't re-render
@@ -1324,6 +1641,36 @@ const ManualMetricsForm = memo(({ manualData, setManualData, language }) => {
   const handleFieldChange = useCallback((field, value) => {
     setManualData(prev => ({ ...prev, [field]: value }));
   }, [setManualData]);
+  
+  // State for the PDF preview modal
+  const [pdfPreview, setPdfPreview] = useState(null); // { field, file, page, yPercent, locator, label }
+  
+  // Map field -> opens PDF preview with scroll to correct region
+  const handleShowInPDF = useCallback((field) => {
+    const mapping = FIELD_PDF_MAP[field];
+    if (!mapping) return;
+    
+    const file = uploadedFiles?.[mapping.sourceKey];
+    if (!file) {
+      // File not uploaded yet — we'll show a notification-style banner in the form
+      setPdfPreview({
+        field,
+        missingFile: true,
+        sourceLabel: mapping.sourceKey,
+        label: field
+      });
+      return;
+    }
+    
+    setPdfPreview({
+      field,
+      file,
+      page: mapping.page,
+      yPercent: mapping.yPercent,
+      locator: mapping.locator[language] || mapping.locator.en,
+      label: field // label will come from t[field] at render
+    });
+  }, [uploadedFiles, language]);
   
   const t = language === 'pt' ? {
     title: 'Métricas Manuais dos PDFs',
@@ -1444,6 +1791,112 @@ const ManualMetricsForm = memo(({ manualData, setManualData, language }) => {
     borderBottom: '1px solid #f3f4f6'
   };
   
+  // Helper: check which PDFs are present for the info banner
+  const pdfsPresent = {
+    healthCheck: !!uploadedFiles?.healthCheck,
+    monitorQuality: !!uploadedFiles?.monitorQuality,
+    platformUtilization: !!uploadedFiles?.platformUtilization
+  };
+  const missingPdfs = [];
+  if (!pdfsPresent.healthCheck) missingPdfs.push('Health Check');
+  if (!pdfsPresent.monitorQuality) missingPdfs.push('Monitor Quality');
+  if (!pdfsPresent.platformUtilization) missingPdfs.push('Platform Utilization');
+  
+  // Helper: renders the 3-state parse banner (parsing / success / error).
+  // Used for each of the 3 auto-parseable PDFs (Health Check, Monitor Quality, Platform Utilization).
+  // Returns null if no PDF uploaded yet for that type.
+  const renderParseBanner = (status, fileUploaded, totalFields, sectionLabel) => {
+    if (!status || !fileUploaded) return null;
+    
+    if (status.parsing) {
+      return (
+        <div style={{
+          background: '#eff6ff',
+          border: '1px solid #bfdbfe',
+          borderRadius: '8px',
+          padding: '0.75rem 1rem',
+          marginBottom: '1rem',
+          fontSize: '0.8125rem',
+          color: '#1e40af',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.5rem'
+        }}>
+          <span>⏳</span>
+          <span>{language === 'pt' ? `Tentando extrair métricas automaticamente do ${sectionLabel}...` : `Attempting to extract ${sectionLabel} metrics automatically...`}</span>
+        </div>
+      );
+    }
+    
+    if (status.success) {
+      return (
+        <div style={{
+          background: '#ecfdf5',
+          border: '1px solid #6ee7b7',
+          borderRadius: '8px',
+          padding: '0.75rem 1rem',
+          marginBottom: '1rem',
+          fontSize: '0.8125rem',
+          color: '#065f46',
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: '0.5rem'
+        }}>
+          <span style={{ fontSize: '1.125rem', flexShrink: 0 }}>✨</span>
+          <div>
+            <strong>
+              {language === 'pt'
+                ? `Extração automática: ${status.extractedCount}/${totalFields} campos preenchidos`
+                : `Auto-extracted: ${status.extractedCount}/${totalFields} fields filled`}
+            </strong>
+            <div style={{ fontSize: '0.75rem', marginTop: '0.25rem', color: '#047857' }}>
+              {language === 'pt'
+                ? 'Os valores foram lidos diretamente do PDF. Confira abaixo e ajuste se necessário.'
+                : 'Values were read directly from the PDF. Review below and adjust if needed.'}
+            </div>
+          </div>
+        </div>
+      );
+    }
+    
+    if (status.error) {
+      return (
+        <div style={{
+          background: '#fef3c7',
+          border: '1px solid #fbbf24',
+          borderRadius: '8px',
+          padding: '0.75rem 1rem',
+          marginBottom: '1rem',
+          fontSize: '0.8125rem',
+          color: '#92400e',
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: '0.5rem'
+        }}>
+          <span style={{ fontSize: '1.125rem', flexShrink: 0 }}>ℹ️</span>
+          <div>
+            <strong>
+              {language === 'pt' ? 'Extração automática não disponível' : 'Auto-extraction not available'}
+            </strong>
+            <div style={{ fontSize: '0.75rem', marginTop: '0.25rem' }}>
+              {language === 'pt'
+                ? 'Este PDF parece ter sido exportado como imagem. Use o botão 👁️ PDF ao lado de cada campo para localizar os valores manualmente.'
+                : 'This PDF appears to be image-based. Use the 👁️ PDF button next to each field to locate values manually.'}
+              <br/>
+              <span style={{ color: '#78350f', fontStyle: 'italic' }}>
+                {language === 'pt'
+                  ? 'Dica: exportar o PDF via Print → Save as PDF (Chrome/Safari) permite extração automática.'
+                  : 'Tip: exporting the PDF via Print → Save as PDF (Chrome/Safari) enables auto-extraction.'}
+              </span>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    
+    return null;
+  };
+  
   return (
     <div style={{
       background: '#f9fafb',
@@ -1454,50 +1907,108 @@ const ManualMetricsForm = memo(({ manualData, setManualData, language }) => {
       <h2 style={{ margin: '0 0 0.5rem 0', fontSize: '1.5rem', color: '#1f2937' }}>
         {t.title}
       </h2>
-      <p style={{ margin: '0 0 1.5rem 0', fontSize: '0.875rem', color: '#6b7280' }}>
+      <p style={{ margin: '0 0 1rem 0', fontSize: '0.875rem', color: '#6b7280' }}>
         {t.subtitle}
       </p>
+      
+      {/* PDF Preview guidance banner */}
+      <div style={{
+        background: missingPdfs.length === 0 ? '#eff6ff' : '#fef3c7',
+        border: `1px solid ${missingPdfs.length === 0 ? '#bfdbfe' : '#fbbf24'}`,
+        borderRadius: '8px',
+        padding: '0.875rem 1rem',
+        marginBottom: '1.5rem',
+        fontSize: '0.8125rem',
+        color: missingPdfs.length === 0 ? '#1e40af' : '#92400e',
+        display: 'flex',
+        alignItems: 'flex-start',
+        gap: '0.625rem'
+      }}>
+        <span style={{ fontSize: '1.125rem', flexShrink: 0 }}>
+          {missingPdfs.length === 0 ? '💡' : '⚠️'}
+        </span>
+        <div>
+          {missingPdfs.length === 0 ? (
+            <>
+              <strong>{language === 'pt' ? 'Dica:' : 'Tip:'}</strong>{' '}
+              {language === 'pt' 
+                ? 'Clique no botão 👁️ PDF ao lado de cada campo para abrir o PDF na região exata onde o valor está.'
+                : 'Click the 👁️ PDF button next to each field to open the PDF at the exact region where the value is shown.'}
+            </>
+          ) : (
+            <>
+              <strong>{language === 'pt' ? 'Atenção:' : 'Notice:'}</strong>{' '}
+              {language === 'pt'
+                ? `Faça upload dos PDFs (${missingPdfs.join(', ')}) para habilitar o botão 👁️ que mostra onde cada valor está.`
+                : `Upload the PDFs (${missingPdfs.join(', ')}) to enable the 👁️ button that shows where each value is located.`}
+            </>
+          )}
+        </div>
+      </div>
       
       {/* Section 1: Health Check Lite */}
       <div style={sectionStyle}>
         <h3 style={sectionTitleStyle}>{t.section1}</h3>
+        
+        {renderParseBanner(healthCheckParseStatus, pdfsPresent.healthCheck, 9, 'Health Check')}
+        
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem' }}>
-          <ManualFieldInput field="infraHostsAvg" label={t.infraHostsAvg} help={t.infraHostsAvgHelp} value={manualData.infraHostsAvg} onChange={handleFieldChange} />
-          <ManualFieldInput field="apmHostsAvg" label={t.apmHostsAvg} help={t.apmHostsAvgHelp} value={manualData.apmHostsAvg} onChange={handleFieldChange} />
-          <ManualFieldInput field="agentImplementationRate" label={t.agentImplementationRate} help={t.agentImplementationRateHelp} value={manualData.agentImplementationRate} onChange={handleFieldChange} />
-          <ManualFieldInput field="hostsWithEnvTag" label={t.hostsWithEnvTag} help={t.hostsWithEnvTagHelp} value={manualData.hostsWithEnvTag} onChange={handleFieldChange} />
-          <ManualFieldInput field="percentageLogsCorrelated" label={t.percentageLogsCorrelated} help={t.percentageLogsCorrelatedHelp} value={manualData.percentageLogsCorrelated} onChange={handleFieldChange} />
-          <ManualFieldInput field="ingestedLogsProcessedByPipeline" label={t.ingestedLogsProcessedByPipeline} help={t.ingestedLogsProcessedByPipelineHelp} value={manualData.ingestedLogsProcessedByPipeline} onChange={handleFieldChange} />
-          <ManualFieldInput field="logsExcludedByExclusion" label={t.logsExcludedByExclusion} help={t.logsExcludedByExclusionHelp} value={manualData.logsExcludedByExclusion} onChange={handleFieldChange} />
-          <ManualFieldInput field="rumAsyncRequestEvents" label={t.rumAsyncRequestEvents} help={t.rumAsyncRequestEventsHelp} value={manualData.rumAsyncRequestEvents} onChange={handleFieldChange} />
-          <ManualFieldInput field="rumSessionsWithUserID" label={t.rumSessionsWithUserID} help={t.rumSessionsWithUserIDHelp} value={manualData.rumSessionsWithUserID} onChange={handleFieldChange} />
+          <ManualFieldInput field="infraHostsAvg" label={t.infraHostsAvg} help={t.infraHostsAvgHelp} value={manualData.infraHostsAvg} onChange={handleFieldChange} onShowInPDF={handleShowInPDF} hasPdfSource={pdfsPresent.healthCheck} />
+          <ManualFieldInput field="apmHostsAvg" label={t.apmHostsAvg} help={t.apmHostsAvgHelp} value={manualData.apmHostsAvg} onChange={handleFieldChange} onShowInPDF={handleShowInPDF} hasPdfSource={pdfsPresent.healthCheck} />
+          <ManualFieldInput field="agentImplementationRate" label={t.agentImplementationRate} help={t.agentImplementationRateHelp} value={manualData.agentImplementationRate} onChange={handleFieldChange} onShowInPDF={handleShowInPDF} hasPdfSource={pdfsPresent.healthCheck} />
+          <ManualFieldInput field="hostsWithEnvTag" label={t.hostsWithEnvTag} help={t.hostsWithEnvTagHelp} value={manualData.hostsWithEnvTag} onChange={handleFieldChange} onShowInPDF={handleShowInPDF} hasPdfSource={pdfsPresent.healthCheck} />
+          <ManualFieldInput field="percentageLogsCorrelated" label={t.percentageLogsCorrelated} help={t.percentageLogsCorrelatedHelp} value={manualData.percentageLogsCorrelated} onChange={handleFieldChange} onShowInPDF={handleShowInPDF} hasPdfSource={pdfsPresent.healthCheck} />
+          <ManualFieldInput field="ingestedLogsProcessedByPipeline" label={t.ingestedLogsProcessedByPipeline} help={t.ingestedLogsProcessedByPipelineHelp} value={manualData.ingestedLogsProcessedByPipeline} onChange={handleFieldChange} onShowInPDF={handleShowInPDF} hasPdfSource={pdfsPresent.healthCheck} />
+          <ManualFieldInput field="logsExcludedByExclusion" label={t.logsExcludedByExclusion} help={t.logsExcludedByExclusionHelp} value={manualData.logsExcludedByExclusion} onChange={handleFieldChange} onShowInPDF={handleShowInPDF} hasPdfSource={pdfsPresent.healthCheck} />
+          <ManualFieldInput field="rumAsyncRequestEvents" label={t.rumAsyncRequestEvents} help={t.rumAsyncRequestEventsHelp} value={manualData.rumAsyncRequestEvents} onChange={handleFieldChange} onShowInPDF={handleShowInPDF} hasPdfSource={pdfsPresent.healthCheck} />
+          <ManualFieldInput field="rumSessionsWithUserID" label={t.rumSessionsWithUserID} help={t.rumSessionsWithUserIDHelp} value={manualData.rumSessionsWithUserID} onChange={handleFieldChange} onShowInPDF={handleShowInPDF} hasPdfSource={pdfsPresent.healthCheck} />
         </div>
       </div>
       
       {/* Section 2: Monitor Quality */}
       <div style={sectionStyle}>
         <h3 style={sectionTitleStyle}>{t.section2}</h3>
+        
+        {renderParseBanner(monitorQualityParseStatus, pdfsPresent.monitorQuality, 8, 'Monitor Quality')}
+        
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem' }}>
-          <ManualFieldInput field="healthyMonitors" label={t.healthyMonitors} help={t.healthyMonitorsHelp} value={manualData.healthyMonitors} onChange={handleFieldChange} />
-          <ManualFieldInput field="monitorsToImprove" label={t.monitorsToImprove} help={t.monitorsToImproveHelp} value={manualData.monitorsToImprove} onChange={handleFieldChange} />
-          <ManualFieldInput field="monitorsWithHighAlerts" label={t.monitorsWithHighAlerts} help={t.monitorsWithHighAlertsHelp} value={manualData.monitorsWithHighAlerts} onChange={handleFieldChange} />
-          <ManualFieldInput field="monitorsMissingRecipients" label={t.monitorsMissingRecipients} help={t.monitorsMissingRecipientsHelp} value={manualData.monitorsMissingRecipients} onChange={handleFieldChange} />
-          <ManualFieldInput field="monitorsMissingDelay" label={t.monitorsMissingDelay} help={t.monitorsMissingDelayHelp} value={manualData.monitorsMissingDelay} onChange={handleFieldChange} />
-          <ManualFieldInput field="monitorsMuted60Days" label={t.monitorsMuted60Days} help={t.monitorsMuted60DaysHelp} value={manualData.monitorsMuted60Days} onChange={handleFieldChange} />
-          <ManualFieldInput field="monitorsMisconfiguredChannels" label={t.monitorsMisconfiguredChannels} help={t.monitorsMisconfiguredChannelsHelp} value={manualData.monitorsMisconfiguredChannels} onChange={handleFieldChange} />
-          <ManualFieldInput field="monitorsInAlertOver7Days" label={t.monitorsInAlertOver7Days} help={t.monitorsInAlertOver7DaysHelp} value={manualData.monitorsInAlertOver7Days} onChange={handleFieldChange} />
+          <ManualFieldInput field="healthyMonitors" label={t.healthyMonitors} help={t.healthyMonitorsHelp} value={manualData.healthyMonitors} onChange={handleFieldChange} onShowInPDF={handleShowInPDF} hasPdfSource={pdfsPresent.monitorQuality} />
+          <ManualFieldInput field="monitorsToImprove" label={t.monitorsToImprove} help={t.monitorsToImproveHelp} value={manualData.monitorsToImprove} onChange={handleFieldChange} onShowInPDF={handleShowInPDF} hasPdfSource={pdfsPresent.monitorQuality} />
+          <ManualFieldInput field="monitorsWithHighAlerts" label={t.monitorsWithHighAlerts} help={t.monitorsWithHighAlertsHelp} value={manualData.monitorsWithHighAlerts} onChange={handleFieldChange} onShowInPDF={handleShowInPDF} hasPdfSource={pdfsPresent.monitorQuality} />
+          <ManualFieldInput field="monitorsMissingRecipients" label={t.monitorsMissingRecipients} help={t.monitorsMissingRecipientsHelp} value={manualData.monitorsMissingRecipients} onChange={handleFieldChange} onShowInPDF={handleShowInPDF} hasPdfSource={pdfsPresent.monitorQuality} />
+          <ManualFieldInput field="monitorsMissingDelay" label={t.monitorsMissingDelay} help={t.monitorsMissingDelayHelp} value={manualData.monitorsMissingDelay} onChange={handleFieldChange} onShowInPDF={handleShowInPDF} hasPdfSource={pdfsPresent.monitorQuality} />
+          <ManualFieldInput field="monitorsMuted60Days" label={t.monitorsMuted60Days} help={t.monitorsMuted60DaysHelp} value={manualData.monitorsMuted60Days} onChange={handleFieldChange} onShowInPDF={handleShowInPDF} hasPdfSource={pdfsPresent.monitorQuality} />
+          <ManualFieldInput field="monitorsMisconfiguredChannels" label={t.monitorsMisconfiguredChannels} help={t.monitorsMisconfiguredChannelsHelp} value={manualData.monitorsMisconfiguredChannels} onChange={handleFieldChange} onShowInPDF={handleShowInPDF} hasPdfSource={pdfsPresent.monitorQuality} />
+          <ManualFieldInput field="monitorsInAlertOver7Days" label={t.monitorsInAlertOver7Days} help={t.monitorsInAlertOver7DaysHelp} value={manualData.monitorsInAlertOver7Days} onChange={handleFieldChange} onShowInPDF={handleShowInPDF} hasPdfSource={pdfsPresent.monitorQuality} />
         </div>
       </div>
       
       {/* Section 3: Platform Utilization */}
       <div style={sectionStyle}>
         <h3 style={sectionTitleStyle}>{t.section3}</h3>
+        
+        {renderParseBanner(platformUtilizationParseStatus, pdfsPresent.platformUtilization, 3, 'Platform Utilization')}
+        
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem' }}>
-          <ManualFieldInput field="timeSpentDays" label={t.timeSpentDays} help={t.timeSpentDaysHelp} value={manualData.timeSpentDays} onChange={handleFieldChange} />
-          <ManualFieldInput field="totalActiveUsers" label={t.totalActiveUsers} help={t.totalActiveUsersHelp} value={manualData.totalActiveUsers} onChange={handleFieldChange} />
-          <ManualFieldInput field="avgUsagePerUser" label={t.avgUsagePerUser} help={t.avgUsagePerUserHelp} value={manualData.avgUsagePerUser} onChange={handleFieldChange} />
+          <ManualFieldInput field="timeSpentDays" label={t.timeSpentDays} help={t.timeSpentDaysHelp} value={manualData.timeSpentDays} onChange={handleFieldChange} onShowInPDF={handleShowInPDF} hasPdfSource={pdfsPresent.platformUtilization} />
+          <ManualFieldInput field="totalActiveUsers" label={t.totalActiveUsers} help={t.totalActiveUsersHelp} value={manualData.totalActiveUsers} onChange={handleFieldChange} onShowInPDF={handleShowInPDF} hasPdfSource={pdfsPresent.platformUtilization} />
+          <ManualFieldInput field="avgUsagePerUser" label={t.avgUsagePerUser} help={t.avgUsagePerUserHelp} value={manualData.avgUsagePerUser} onChange={handleFieldChange} onShowInPDF={handleShowInPDF} hasPdfSource={pdfsPresent.platformUtilization} />
         </div>
       </div>
+      
+      {/* PDF Preview Modal */}
+      {pdfPreview && !pdfPreview.missingFile && (
+        <PDFPreviewModal
+          open={true}
+          file={pdfPreview.file}
+          page={pdfPreview.page}
+          yPercent={pdfPreview.yPercent}
+          fieldLabel={t[pdfPreview.field] || pdfPreview.field}
+          locator={pdfPreview.locator}
+          onClose={() => setPdfPreview(null)}
+          language={language}
+        />
+      )}
     </div>
   );
 });
@@ -3976,7 +4487,72 @@ async function extractTextFromPDF(file) {
   for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
     const page = await pdf.getPage(pageNum);
     const textContent = await page.getTextContent();
-    const pageText = textContent.items.map(item => item.str).join(' ');
+    
+    // IMPORTANT: pdfjs may return text at different granularities:
+    //   - Word-level items (pdfjs 5.x, macOS Preview PDFs): item.str = "Healthy monitors"
+    //   - Glyph-level items (pdfjs 3.x CDN, some Quartz PDFs): item.str = "H", "e", "a", ...
+    // 
+    // Simply doing items.map(i => i.str).join(' ') produces broken text in the glyph case:
+    //   "H e a l t h y   m o n i t o r s"
+    // 
+    // Fix: inspect transform[5] (Y coordinate) and transform[4] (X coordinate) to
+    // detect adjacent glyphs on the same baseline. If two consecutive items are on
+    // the same line and horizontally close, concatenate them without a space.
+    // Use hasEOL as authoritative line-break signal when available.
+    const items = textContent.items;
+    let pageText = '';
+    let prevY = null;
+    let prevEndX = null;
+    
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const str = item.str;
+      
+      // Skip empty strings, but respect hasEOL (line break signal)
+      if (item.hasEOL) {
+        pageText += '\n';
+        prevY = null;
+        prevEndX = null;
+        continue;
+      }
+      if (!str) continue;
+      
+      // Extract position from transform matrix [a, b, c, d, e, f]
+      // e = X translation, f = Y translation
+      const transform = item.transform || [0, 0, 0, 0, 0, 0];
+      const x = transform[4];
+      const y = transform[5];
+      const width = item.width || 0;
+      
+      // Decide whether to add a space before this item.
+      // Add space if:
+      //   - This is the first item on a new line (different Y)
+      //   - OR there's a horizontal gap between this item and the previous end
+      // No space if:
+      //   - Same Y (baseline) AND this X is close to previous end X (glyph continuation)
+      if (prevY !== null && Math.abs(y - prevY) < 0.5) {
+        // Same baseline — check horizontal proximity
+        const gap = x - prevEndX;
+        // If gap is smaller than a typical character width, likely glyph continuation
+        if (gap < 2 && gap >= -0.5) {
+          // Glyph continuation — no space
+          pageText += str;
+        } else {
+          // Word boundary or wider gap — space separator
+          pageText += ' ' + str;
+        }
+      } else {
+        // Different line
+        if (pageText.length > 0 && !pageText.endsWith('\n')) {
+          pageText += ' ';
+        }
+        pageText += str;
+      }
+      
+      prevY = y;
+      prevEndX = x + width;
+    }
+    
     fullText += pageText + '\n';
   }
   
@@ -4128,6 +4704,339 @@ function parseMRRText(text) {
   return result;
 }
 
+/**
+ * Parses Monitor Quality PDF text and extracts the 8 key metrics.
+ * 
+ * Only works on PDFs with extractable text (e.g., saved via macOS Preview or
+ * browser's Print-to-PDF). PDFs generated by jsPDF (Datadog's native Export button)
+ * do NOT contain extractable text and will return { success: false }.
+ * 
+ * The patterns look for common Datadog phrases like:
+ *   "N Healthy monitors"
+ *   "N Monitors to improve"
+ *   "N monitors are generating a high volume of alerts"
+ *   etc.
+ * 
+ * Returns:
+ *   {
+ *     success: boolean,
+ *     fields: { healthyMonitors, monitorsToImprove, ... },  // field -> number
+ *     extractedCount: number,  // how many of the 8 fields were found
+ *     error?: string
+ *   }
+ */
+function parseMonitorQualityText(text) {
+  const result = {
+    success: false,
+    fields: {},
+    extractedCount: 0,
+    error: null
+  };
+  
+  if (!text || text.length < 50) {
+    result.error = 'No extractable text in this PDF';
+    return result;
+  }
+  
+  // Safe number parse: '38,441' -> 38441, '1080' -> 1080
+  const toNumber = (s) => {
+    const cleaned = String(s).replace(/[,.]/g, '');
+    const n = parseInt(cleaned, 10);
+    return isNaN(n) ? null : n;
+  };
+  
+  // Field -> regex pattern (case-insensitive, flexible whitespace).
+  // Each pattern captures the number preceding the phrase.
+  const patterns = {
+    healthyMonitors: /([\d,]+)\s+Healthy\s+monitors/i,
+    monitorsToImprove: /([\d,]+)\s+Monitors\s+to\s+improve/i,
+    monitorsWithHighAlerts: /([\d,]+)\s+monitors\s+are\s+generating\s+a\s+high\s+volume/i,
+    monitorsMissingRecipients: /([\d,]+)\s+monitors\s+have\s+missing\s+recipients/i,
+    monitorsMissingDelay: /([\d,]+)\s+monitors\s+are\s+missing\s+a\s+delay/i,
+    monitorsMuted60Days: /([\d,]+)\s+monitors\s+have\s+been\s+muted\s+for\s+more\s+than\s+60\s+days/i,
+    monitorsMisconfiguredChannels: /([\d,]+)\s+monitors\s+have\s+misconfigured\s+notification\s+channels/i,
+    monitorsInAlertOver7Days: /([\d,]+)\s+monitors\s+have\s+been\s+in\s+alert\s+for\s+more\s+than\s+7\s+days/i,
+  };
+  
+  for (const [field, pattern] of Object.entries(patterns)) {
+    const match = text.match(pattern);
+    if (match) {
+      const num = toNumber(match[1]);
+      if (num !== null) {
+        result.fields[field] = num;
+        result.extractedCount++;
+      }
+    }
+  }
+  
+  // Consider successful if we got at least 4 of the 8 fields
+  // (some clients may have dismissed issues, so not all sections appear)
+  if (result.extractedCount >= 4) {
+    result.success = true;
+  } else {
+    result.error = `Only ${result.extractedCount}/8 fields detected. PDF may be image-based (jsPDF export).`;
+  }
+  
+  return result;
+}
+
+/**
+ * Parses Platform Utilization PDF text and extracts 3 key metrics + bonuses.
+ * 
+ * STRATEGY: The browser's pdfjs extracts text in an unpredictable order, and
+ * charts have both the big value AND axis labels in the stream. We locate each
+ * metric by its TEXTUAL MARKER (section title), then parse numbers in the chunk
+ * between markers. Observations from actual pdfjs output:
+ * 
+ *   "Time Spent In Platform  2.3 days  58.7 min   36 days Total & Concurrent..."
+ *                            ^^^^^^^^  ^^^^^^^^   ^^^^^^^
+ *                            min-axis  min-axis   big value (always largest)
+ * 
+ *   "Total & Concurrent Active Users  39  6   364 Concurrent Active Sessions..."
+ *                                     ^^  ^   ^^^
+ *                                     axis axis big value (largest reasonable)
+ * 
+ *   "AVG Usage / user  2.2 hr  0.06 hr   2 hr Time Spent in OTB..."
+ *                      ^^^^^^  ^^^^^^^   ^^^^
+ *                      max-ax  min-axis  big value (integer, no decimal)
+ * 
+ * For days and users: pick the LARGEST reasonable value in the chunk.
+ * For hours: prefer the integer (no decimal) — Datadog displays big values
+ * without decimals ("2 hr") while axis labels use decimals ("2.2 hr", "0.06 hr").
+ * 
+ * Returns:
+ *   {
+ *     success: boolean,
+ *     fields: { timeSpentDays, totalActiveUsers, avgUsagePerUser, datadogSupportDays? },
+ *     extractedCount: number,
+ *     error?: string
+ *   }
+ */
+function parsePlatformUtilizationText(text) {
+  const result = {
+    success: false,
+    fields: {},
+    extractedCount: 0,
+    error: null
+  };
+  
+  if (!text || text.length < 100) {
+    result.error = 'No extractable text in this PDF';
+    return result;
+  }
+  
+  // 1. timeSpentDays: chunk between "Time Spent In Platform" and "Total & Concurrent"
+  //    Pick the LARGEST value among "N days" occurrences (big number > axis labels).
+  const timeChunkMatch = text.match(
+    /Time\s+Spent\s+In\s+Platform([\s\S]+?)Total\s+&\s+Concurrent\s+Active\s+Users/
+  );
+  if (timeChunkMatch) {
+    const chunk = timeChunkMatch[1];
+    const dayValues = [...chunk.matchAll(/(\d+(?:\.\d+)?)\s*days?/gi)]
+      .map(m => parseFloat(m[1]))
+      .filter(n => n > 0 && n < 10000);
+    if (dayValues.length > 0) {
+      result.fields.timeSpentDays = Math.max(...dayValues);
+      result.extractedCount++;
+    }
+  }
+  
+  // 2. totalActiveUsers: scan lines after "Total & Concurrent Active Users"
+  //    and collect reasonable user-count integers (50-50000) until we hit a
+  //    year (like "2026") or a chart axis sequence (0, 50, 100, 150, 200, 250).
+  //    This handles both pdftotext -layout (single chunk) and browser's noisy
+  //    multiline output.
+  const labelIdx = text.indexOf('Total & Concurrent Active Users');
+  if (labelIdx >= 0) {
+    const startIdx = labelIdx + 'Total & Concurrent Active Users'.length;
+    const chunkText = text.substring(startIdx, startIdx + 1500);
+    const lines = chunkText.split('\n');
+    const collected = [];
+    for (let i = 0; i < Math.min(lines.length, 15); i++) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      // Stop at year (2000-2099) — marks chart X-axis
+      if (/^\s*20\d{2}\b/.test(line)) break;
+      // Stop at isolated axis-ticks typical of this chart (0, 50, 100, 150, 200, 250)
+      if (/^\s*(?:0|50|100|150|200|250)\s*$/.test(line)) break;
+      // Collect integers in reasonable range
+      const nums = [...line.matchAll(/\b(\d+)\b/g)]
+        .map(m => parseInt(m[1], 10))
+        .filter(n => n >= 50 && n <= 50000);
+      collected.push(...nums);
+    }
+    if (collected.length > 0) {
+      result.fields.totalActiveUsers = Math.max(...collected);
+      result.extractedCount++;
+    }
+  }
+  
+  // 3. avgUsagePerUser: chunk between "AVG Usage / user" and "Time Spent in OTB".
+  //    Prefer integer values (big numbers like "2 hr") over decimals (axis labels
+  //    like "2.2 hr", "0.06 hr").
+  const usageChunkMatch = text.match(
+    /AVG\s+Usage\s*\/\s*user([\s\S]+?)Time\s+Spent\s+in\s+OTB/
+  );
+  if (usageChunkMatch) {
+    const chunk = usageChunkMatch[1];
+    const hrMatches = [...chunk.matchAll(/(\d+(?:\.\d+)?)\s*hr\b/gi)];
+    const hrValues = hrMatches.map(m => m[1]);
+    // Prefer integers (no decimal point) — those are the big numbers
+    const integers = hrValues.filter(v => !v.includes('.'));
+    const pickedValue = integers.length > 0
+      ? parseFloat(integers[0])
+      : (hrValues.length > 0 ? Math.max(...hrValues.map(parseFloat)) : null);
+    if (pickedValue !== null && pickedValue > 0 && pickedValue < 10000) {
+      result.fields.avgUsagePerUser = pickedValue;
+      result.extractedCount++;
+    }
+  }
+  
+  // Bonus: Datadog Support usage days
+  const supportMatch = text.match(/(\d+(?:\.\d+)?)\s*days?\s+Datadog\s+Support/);
+  if (supportMatch) {
+    result.fields.datadogSupportDays = parseFloat(supportMatch[1]);
+  }
+  
+  if (result.extractedCount >= 2) {
+    result.success = true;
+  } else {
+    result.error = `Only ${result.extractedCount}/3 core fields detected. PDF may be image-based (jsPDF export).`;
+  }
+  
+  return result;
+}
+
+/**
+ * Parses Health Check Lite PDF text and extracts 9 key metrics + bonuses.
+ * 
+ * The Datadog Health Check has:
+ *   - A top table with "Infra/APM AVG MIN MAX SUM VALUE" hosts data
+ *   - Multiple "big number" percentage charts (Agent ratio, env tag, logs correlated, etc.)
+ *   - Each big chart has the VALUE with space before %, ceiling/floor without space
+ * 
+ * Key disambiguation: "Percentage of Logs Correlated" appears TWICE in the PDF:
+ *   1. In "Best Practices" text paragraph (no number)
+ *   2. As the actual chart title (followed by the number)
+ * So we use LAST match to get the chart occurrence.
+ * 
+ * Only works on PDFs with extractable text (macOS Preview / Print-to-PDF).
+ * 
+ * Returns:
+ *   {
+ *     success: boolean,
+ *     fields: { infraHostsAvg, apmHostsAvg, agentImplementationRate, hostsWithEnvTag,
+ *               percentageLogsCorrelated, ingestedLogsProcessedByPipeline,
+ *               logsExcludedByExclusion, rumAsyncRequestEvents, rumSessionsWithUserID,
+ *               k8sWithFullTags? },
+ *     extractedCount: number,
+ *     error?: string
+ *   }
+ */
+function parseHealthCheckText(text) {
+  const result = {
+    success: false,
+    fields: {},
+    extractedCount: 0,
+    error: null
+  };
+  
+  if (!text || text.length < 200) {
+    result.error = 'No extractable text in this PDF';
+    return result;
+  }
+  
+  // Helper: parse Datadog-style compact numbers ("26.1k" -> 26100, "1.59M" -> 1590000)
+  const parseDatadogNumber = (s) => {
+    if (!s) return null;
+    s = s.trim();
+    const multipliers = { k: 1000, M: 1000000, G: 1000000000, T: 1000000000000 };
+    const lastChar = s.slice(-1);
+    if (multipliers[lastChar]) {
+      return parseFloat(s.slice(0, -1)) * multipliers[lastChar];
+    }
+    return parseFloat(s.replace(/,/g, ''));
+  };
+  
+  // Helper: for big-number charts, uses LAST match of label to skip
+  // best-practices text and lock onto the chart title, then extracts the
+  // first "NN.NN %" pattern (with space before %).
+  const parseBigPctLast = (labelPattern) => {
+    const regex = new RegExp(labelPattern, 'gi');
+    const matches = [...text.matchAll(regex)];
+    if (matches.length === 0) return null;
+    const lastMatch = matches[matches.length - 1];
+    const startIdx = lastMatch.index + lastMatch[0].length;
+    const chunk = text.substring(startIdx, startIdx + 800);
+    // Primary: number with space before % (big value)
+    let m = chunk.match(/(\d+(?:\.\d+)?)\s+%/);
+    if (m) return parseFloat(m[1]);
+    // Fallback: any number with %
+    m = chunk.match(/(\d+(?:\.\d+)?)\s*%/);
+    if (m) return parseFloat(m[1]);
+    return null;
+  };
+  
+  // --- 1. Infra Hosts AVG (from "Infra and APM Hosts last month" table) ---
+  // Line like: "* Infra 26.1k hosts 24.5k hosts 29.0k hosts 1.59M hosts 25.4k hosts"
+  // AVG is the first number.
+  const infraMatch = text.match(/\*\s+Infra\s+([\d.]+[kMGT]?)\s+hosts/);
+  if (infraMatch) {
+    const val = parseDatadogNumber(infraMatch[1]);
+    if (val !== null && !isNaN(val)) {
+      result.fields.infraHostsAvg = val;
+      result.extractedCount++;
+    }
+  }
+  
+  // --- 2. APM Hosts AVG (same table, second row) ---
+  // Line: "* APM 9.16k 8.25k 10.3k 559k 8.38k" (no "hosts" suffix for APM row)
+  const apmMatch = text.match(/\*\s+APM\s+([\d.]+[kMGT]?)\s/);
+  if (apmMatch) {
+    const val = parseDatadogNumber(apmMatch[1]);
+    if (val !== null && !isNaN(val)) {
+      result.fields.apmHostsAvg = val;
+      result.extractedCount++;
+    }
+  }
+  
+  // --- 3-9. Big number percentage charts ---
+  const charts = {
+    agentImplementationRate: 'Agent\\s+instrumentation\\s+ratio\\s+last\\s+month',
+    hostsWithEnvTag: 'Host\\s+agents\\s+with\\s+"?env"?\\s+tag',
+    percentageLogsCorrelated: 'Percentage\\s+of\\s+Logs\\s+Correlated\\s+with\\s+APM\\s+Services',
+    ingestedLogsProcessedByPipeline: 'Ingested\\s+logs\\s+proces+esed\\s+by\\s+pipeline',
+    logsExcludedByExclusion: 'Log\\s+events\\s+excluded\\s+by\\s+exclusion\\s+f[il]+ters',
+    rumAsyncRequestEvents: 'RUM\\s+async\\s+request\\s+events\\s+with\\s+APM\\s+traces',
+    rumSessionsWithUserID: "RUM\\s+sessions\\s+with\\s+User\\s+ID"
+  };
+  
+  for (const [field, pattern] of Object.entries(charts)) {
+    const val = parseBigPctLast(pattern);
+    if (val !== null && !isNaN(val)) {
+      result.fields[field] = val;
+      result.extractedCount++;
+    }
+  }
+  
+  // --- BONUS: K8s containers with full tags (not currently in manual form) ---
+  const k8sVal = parseBigPctLast('K8s\\s+containers\\s+with\\s+Env');
+  if (k8sVal !== null && !isNaN(k8sVal)) {
+    result.fields.k8sWithFullTags = k8sVal;
+    // Note: NOT counted in extractedCount (bonus metric)
+  }
+  
+  // Consider successful if we got at least 5 of the 9 core fields
+  // (some clients may not have RUM or may have no log correlation)
+  if (result.extractedCount >= 5) {
+    result.success = true;
+  } else {
+    result.error = `Only ${result.extractedCount}/9 fields detected. PDF may be image-based (jsPDF export).`;
+  }
+  
+  return result;
+}
+
 // Main Component
 function ObservabilityMaturityAssessment({ onBack, onNavigateToAdmin, initialLanguage }) {
   const [language, setLanguage] = useState(initialLanguage || null);
@@ -4181,6 +5090,31 @@ function ObservabilityMaturityAssessment({ onBack, onNavigateToAdmin, initialLan
     detectedProducts: [],
     avgMonthlySpend: null
   });
+  // Monitor Quality auto-parse status. Fields are populated into manualData
+  // automatically when the PDF has extractable text (Print-to-PDF).
+  const [monitorQualityParseStatus, setMonitorQualityParseStatus] = useState({
+    parsing: false,
+    success: false,
+    error: null,
+    extractedCount: 0,
+    extractedFields: []
+  });
+  // Platform Utilization auto-parse status
+  const [platformUtilizationParseStatus, setPlatformUtilizationParseStatus] = useState({
+    parsing: false,
+    success: false,
+    error: null,
+    extractedCount: 0,
+    extractedFields: []
+  });
+  // Health Check auto-parse status
+  const [healthCheckParseStatus, setHealthCheckParseStatus] = useState({
+    parsing: false,
+    success: false,
+    error: null,
+    extractedCount: 0,
+    extractedFields: []
+  });
   const [isDragging, setIsDragging] = useState(false);
   const [uploadStatus, setUploadStatus] = useState('');
   const [assessmentHistory, setAssessmentHistory] = useState([]);
@@ -4202,22 +5136,6 @@ function ObservabilityMaturityAssessment({ onBack, onNavigateToAdmin, initialLan
     }
   }, [language, accountId]);
 
-  const handleFileUpload = useCallback((files, fileType) => {
-    if (files && files.length > 0) {
-      const file = files[0];
-      
-      setUploadedFiles(prev => ({
-        ...prev,
-        [fileType]: file
-      }));
-      
-      setUploadStatus(language === 'pt' 
-        ? `✅ ${file.name} carregado com sucesso`
-        : `✅ ${file.name} uploaded successfully`);
-      setTimeout(() => setUploadStatus(''), 3000);
-    }
-  }, [language]);
-  
   // Parse MRR PDF when uploaded (extracts products + spend automatically)
   const handleMRRUpload = useCallback(async (file) => {
     if (!file) return;
@@ -4278,38 +5196,292 @@ function ObservabilityMaturityAssessment({ onBack, onNavigateToAdmin, initialLan
     }
   }, []);
 
+  /**
+   * Attempts to parse Monitor Quality PDF automatically.
+   * If PDF has extractable text (Print-to-PDF), auto-fills manualData fields.
+   * If PDF is image-based (jsPDF), fails gracefully — user falls back to
+   * manual entry with the 👁️ PDF preview helper.
+   */
+  const handleMonitorQualityUpload = useCallback(async (file) => {
+    if (!file) return;
+    
+    setMonitorQualityParseStatus({
+      parsing: true,
+      success: false,
+      error: null,
+      extractedCount: 0,
+      extractedFields: []
+    });
+    
+    try {
+      console.log('📋 [MQ PARSER] Starting extraction for:', file.name);
+      const text = await extractTextFromPDF(file);
+      console.log('📋 [MQ PARSER] Extracted text length:', text.length);
+      console.log('📋 [MQ PARSER] First 800 chars:', text.substring(0, 800));
+      
+      const parsed = parseMonitorQualityText(text);
+      console.log('📋 [MQ PARSER] Parse result:', JSON.stringify(parsed, null, 2));
+      
+      if (parsed.success) {
+        // Auto-fill the manualData fields that were extracted
+        setManualData(prev => {
+          const updated = { ...prev };
+          Object.entries(parsed.fields).forEach(([field, value]) => {
+            // Only overwrite if empty or different (don't clobber user edits)
+            if (!prev[field] || String(prev[field]) !== String(value)) {
+              updated[field] = String(value);
+            }
+          });
+          return updated;
+        });
+        
+        setMonitorQualityParseStatus({
+          parsing: false,
+          success: true,
+          error: null,
+          extractedCount: parsed.extractedCount,
+          extractedFields: Object.keys(parsed.fields)
+        });
+        
+        console.log(`📋 [MQ PARSER] ✅ Auto-filled ${parsed.extractedCount} fields`);
+      } else {
+        setMonitorQualityParseStatus({
+          parsing: false,
+          success: false,
+          error: parsed.error || 'Failed to parse Monitor Quality',
+          extractedCount: parsed.extractedCount,
+          extractedFields: []
+        });
+      }
+    } catch (err) {
+      console.error('📋 [MQ PARSER] Error:', err);
+      setMonitorQualityParseStatus({
+        parsing: false,
+        success: false,
+        error: err.message || 'PDF extraction failed',
+        extractedCount: 0,
+        extractedFields: []
+      });
+    }
+  }, []);
+
+  /**
+   * Attempts to parse Platform Utilization PDF automatically.
+   * Extracts timeSpentDays, totalActiveUsers, avgUsagePerUser (+ datadogSupportDays bonus).
+   */
+  const handlePlatformUtilizationUpload = useCallback(async (file) => {
+    if (!file) return;
+    
+    setPlatformUtilizationParseStatus({
+      parsing: true,
+      success: false,
+      error: null,
+      extractedCount: 0,
+      extractedFields: []
+    });
+    
+    try {
+      console.log('👥 [PU PARSER] Starting extraction for:', file.name);
+      const text = await extractTextFromPDF(file);
+      console.log('👥 [PU PARSER] Extracted text length:', text.length);
+      console.log('👥 [PU PARSER] First 800 chars:', text.substring(0, 800));
+      
+      const parsed = parsePlatformUtilizationText(text);
+      console.log('👥 [PU PARSER] Parse result:', JSON.stringify(parsed, null, 2));
+      
+      if (parsed.success) {
+        setManualData(prev => {
+          const updated = { ...prev };
+          Object.entries(parsed.fields).forEach(([field, value]) => {
+            // Only overwrite if empty or different (don't clobber user edits).
+            // Also: datadogSupportDays is a bonus field not in manualData, skip it.
+            if (field === 'datadogSupportDays') return;
+            if (!prev[field] || String(prev[field]) !== String(value)) {
+              updated[field] = String(value);
+            }
+          });
+          return updated;
+        });
+        
+        setPlatformUtilizationParseStatus({
+          parsing: false,
+          success: true,
+          error: null,
+          extractedCount: parsed.extractedCount,
+          extractedFields: Object.keys(parsed.fields)
+        });
+        
+        console.log(`👥 [PU PARSER] ✅ Auto-filled ${parsed.extractedCount} fields`);
+      } else {
+        setPlatformUtilizationParseStatus({
+          parsing: false,
+          success: false,
+          error: parsed.error || 'Failed to parse Platform Utilization',
+          extractedCount: parsed.extractedCount,
+          extractedFields: []
+        });
+      }
+    } catch (err) {
+      console.error('👥 [PU PARSER] Error:', err);
+      setPlatformUtilizationParseStatus({
+        parsing: false,
+        success: false,
+        error: err.message || 'PDF extraction failed',
+        extractedCount: 0,
+        extractedFields: []
+      });
+    }
+  }, []);
+
+  /**
+   * Attempts to parse Health Check Lite PDF automatically.
+   * Extracts 9 core metrics (hosts, tags, logs, RUM) plus k8sWithFullTags bonus.
+   */
+  const handleHealthCheckUpload = useCallback(async (file) => {
+    if (!file) return;
+    
+    setHealthCheckParseStatus({
+      parsing: true,
+      success: false,
+      error: null,
+      extractedCount: 0,
+      extractedFields: []
+    });
+    
+    try {
+      console.log('🏥 [HC PARSER] Starting extraction for:', file.name);
+      const text = await extractTextFromPDF(file);
+      console.log('🏥 [HC PARSER] Extracted text length:', text.length);
+      console.log('🏥 [HC PARSER] First 800 chars:', text.substring(0, 800));
+      
+      const parsed = parseHealthCheckText(text);
+      console.log('🏥 [HC PARSER] Parse result:', JSON.stringify(parsed, null, 2));
+      
+      if (parsed.success) {
+        setManualData(prev => {
+          const updated = { ...prev };
+          Object.entries(parsed.fields).forEach(([field, value]) => {
+            // k8sWithFullTags is bonus, not in the manual form — skip.
+            if (field === 'k8sWithFullTags') return;
+            if (!prev[field] || String(prev[field]) !== String(value)) {
+              updated[field] = String(value);
+            }
+          });
+          return updated;
+        });
+        
+        setHealthCheckParseStatus({
+          parsing: false,
+          success: true,
+          error: null,
+          extractedCount: parsed.extractedCount,
+          extractedFields: Object.keys(parsed.fields)
+        });
+        
+        console.log(`🏥 [HC PARSER] ✅ Auto-filled ${parsed.extractedCount} fields`);
+      } else {
+        setHealthCheckParseStatus({
+          parsing: false,
+          success: false,
+          error: parsed.error || 'Failed to parse Health Check',
+          extractedCount: parsed.extractedCount,
+          extractedFields: []
+        });
+      }
+    } catch (err) {
+      console.error('🏥 [HC PARSER] Error:', err);
+      setHealthCheckParseStatus({
+        parsing: false,
+        success: false,
+        error: err.message || 'PDF extraction failed',
+        extractedCount: 0,
+        extractedFields: []
+      });
+    }
+  }, []);
+
+  // Single-slot file upload handler. Must be declared AFTER the parser handlers
+  // above because it references them (JS temporal dead zone for const).
+  const handleFileUpload = useCallback((files, fileType) => {
+    if (files && files.length > 0) {
+      const file = files[0];
+      console.log(`📂 [SINGLE UPLOAD] slot=${fileType} file=${file.name}`);
+      
+      setUploadedFiles(prev => ({
+        ...prev,
+        [fileType]: file
+      }));
+      
+      setUploadStatus(language === 'pt' 
+        ? `✅ ${file.name} carregado com sucesso`
+        : `✅ ${file.name} uploaded successfully`);
+      setTimeout(() => setUploadStatus(''), 3000);
+      
+      // Auto-parse based on file type
+      if (fileType === 'historicalMRR') {
+        console.log('  → triggering MRR parser');
+        handleMRRUpload(file);
+      } else if (fileType === 'monitorQuality') {
+        console.log('  → triggering Monitor Quality parser');
+        handleMonitorQualityUpload(file);
+      } else if (fileType === 'platformUtilization') {
+        console.log('  → triggering Platform Utilization parser');
+        handlePlatformUtilizationUpload(file);
+      } else if (fileType === 'healthCheck') {
+        console.log('  → triggering Health Check parser');
+        handleHealthCheckUpload(file);
+      } else {
+        console.warn('  ⚠️ No parser for fileType:', fileType);
+      }
+    }
+  }, [language, handleMRRUpload, handleMonitorQualityUpload, handlePlatformUtilizationUpload, handleHealthCheckUpload]);
+
   const handleMultipleFilesSelect = useCallback((e) => {
     const files = Array.from(e.target.files);
+    console.log('📂 [MULTI SELECT] Files received:', files.map(f => f.name));
     const newFiles = { ...uploadedFiles };
     let mrrFile = null;
+    let monitorQualityFile = null;
+    let platformUtilizationFile = null;
+    let healthCheckFile = null;
     
     files.forEach(file => {
       const fileName = file.name.toLowerCase();
       if (fileName.includes('health') || fileName.includes('healh')) {
+        console.log('  → classified as healthCheck:', file.name);
         newFiles.healthCheck = file;
+        healthCheckFile = file;
       } else if (fileName.includes('mrr') || fileName.includes('historical')) {
+        console.log('  → classified as historicalMRR:', file.name);
         newFiles.historicalMRR = file;
         mrrFile = file;
       } else if (fileName.includes('quality') || fileName.includes('monitor')) {
+        console.log('  → classified as monitorQuality:', file.name);
         newFiles.monitorQuality = file;
+        monitorQualityFile = file;
       } else if (fileName.includes('utilization') || fileName.includes('platform')) {
+        console.log('  → classified as platformUtilization:', file.name);
         newFiles.platformUtilization = file;
+        platformUtilizationFile = file;
+      } else {
+        console.warn('  ⚠️ UNCLASSIFIED file:', file.name);
       }
     });
     
     setUploadedFiles(newFiles);
     
-    // Auto-parse MRR if detected
-    if (mrrFile) {
-      handleMRRUpload(mrrFile);
-    }
+    // Auto-parse all supported PDFs
+    if (mrrFile) handleMRRUpload(mrrFile);
+    if (monitorQualityFile) handleMonitorQualityUpload(monitorQualityFile);
+    if (platformUtilizationFile) handlePlatformUtilizationUpload(platformUtilizationFile);
+    if (healthCheckFile) handleHealthCheckUpload(healthCheckFile);
     
     const uploadedCount = Object.values(newFiles).filter(f => f !== null).length;
     setUploadStatus(language === 'pt'
       ? `✅ ${uploadedCount} arquivo(s) carregado(s)`
       : `✅ ${uploadedCount} file(s) uploaded`);
     setTimeout(() => setUploadStatus(''), 3000);
-  }, [uploadedFiles, language, handleMRRUpload]);
+  }, [uploadedFiles, language, handleMRRUpload, handleMonitorQualityUpload, handlePlatformUtilizationUpload, handleHealthCheckUpload]);
 
   const handleMultiDrop = useCallback((e) => {
     e.preventDefault();
@@ -4317,36 +5489,50 @@ function ObservabilityMaturityAssessment({ onBack, onNavigateToAdmin, initialLan
     setIsDragging(false);
     
     const files = Array.from(e.dataTransfer.files);
+    console.log('📂 [MULTI DROP] Files received:', files.map(f => f.name));
     const newFiles = { ...uploadedFiles };
     let mrrFile = null;
+    let monitorQualityFile = null;
+    let platformUtilizationFile = null;
+    let healthCheckFile = null;
     
     files.forEach(file => {
       const fileName = file.name.toLowerCase();
       if (fileName.includes('health') || fileName.includes('healh')) {
+        console.log('  → classified as healthCheck:', file.name);
         newFiles.healthCheck = file;
+        healthCheckFile = file;
       } else if (fileName.includes('mrr') || fileName.includes('historical')) {
+        console.log('  → classified as historicalMRR:', file.name);
         newFiles.historicalMRR = file;
         mrrFile = file;
       } else if (fileName.includes('quality') || fileName.includes('monitor')) {
+        console.log('  → classified as monitorQuality:', file.name);
         newFiles.monitorQuality = file;
+        monitorQualityFile = file;
       } else if (fileName.includes('utilization') || fileName.includes('platform')) {
+        console.log('  → classified as platformUtilization:', file.name);
         newFiles.platformUtilization = file;
+        platformUtilizationFile = file;
+      } else {
+        console.warn('  ⚠️ UNCLASSIFIED file:', file.name);
       }
     });
     
     setUploadedFiles(newFiles);
     
-    // Auto-parse MRR if detected
-    if (mrrFile) {
-      handleMRRUpload(mrrFile);
-    }
+    // Auto-parse all supported PDFs
+    if (mrrFile) handleMRRUpload(mrrFile);
+    if (monitorQualityFile) handleMonitorQualityUpload(monitorQualityFile);
+    if (platformUtilizationFile) handlePlatformUtilizationUpload(platformUtilizationFile);
+    if (healthCheckFile) handleHealthCheckUpload(healthCheckFile);
     
     const uploadedCount = Object.values(newFiles).filter(f => f !== null).length;
     setUploadStatus(language === 'pt'
       ? `✅ ${uploadedCount} arquivo(s) carregado(s)`
       : `✅ ${uploadedCount} file(s) uploaded`);
     setTimeout(() => setUploadStatus(''), 3000);
-  }, [uploadedFiles, language, handleMRRUpload]);
+  }, [uploadedFiles, language, handleMRRUpload, handleMonitorQualityUpload, handlePlatformUtilizationUpload, handleHealthCheckUpload]);
 
   const handleDrop = useCallback((e, fileType) => {
     e.preventDefault();
@@ -4956,6 +6142,10 @@ function ObservabilityMaturityAssessment({ onBack, onNavigateToAdmin, initialLan
                 manualData={manualData}
                 setManualData={setManualData}
                 language={language}
+                uploadedFiles={uploadedFiles}
+                monitorQualityParseStatus={monitorQualityParseStatus}
+                platformUtilizationParseStatus={platformUtilizationParseStatus}
+                healthCheckParseStatus={healthCheckParseStatus}
               />
 
               {/* Calculate Button */}
