@@ -804,6 +804,17 @@ const TRANSLATIONS = {
     historicalAssessments: 'Assessments Históricos',
     saveAssessment: 'Salvar Assessment',
     viewHistory: 'Ver Histórico',
+    exportToDrive: 'Exportar para Drive',
+    exportAllToDrive: 'Exportar Todos',
+    importFromDrive: 'Importar do Drive',
+    exportSuccess: 'Arquivo baixado! Suba para a pasta compartilhada do Drive.',
+    importSuccess: 'Importado com sucesso',
+    importError: 'Erro ao importar arquivo',
+    unsyncedChanges: 'Mudanças não-sincronizadas',
+    driveHelpTitle: 'Como compartilhar com a equipe',
+    driveHelpStep1: 'Clique em "Exportar para Drive" para baixar o arquivo',
+    driveHelpStep2: 'Arraste o arquivo para a pasta compartilhada da equipe no Google Drive',
+    driveHelpStep3: 'Outros CSMs podem clicar em "Importar do Drive" para carregar o assessment',
     evolutionTrend: 'Tendência de Evolução',
     noHistory: 'Nenhum assessment anterior encontrado',
     compareWith: 'Comparar com',
@@ -854,6 +865,17 @@ const TRANSLATIONS = {
     historicalAssessments: 'Historical Assessments',
     saveAssessment: 'Save Assessment',
     viewHistory: 'View History',
+    exportToDrive: 'Export to Drive',
+    exportAllToDrive: 'Export All',
+    importFromDrive: 'Import from Drive',
+    exportSuccess: 'File downloaded! Upload it to the team shared Drive folder.',
+    importSuccess: 'Imported successfully',
+    importError: 'Error importing file',
+    unsyncedChanges: 'Unsynced changes',
+    driveHelpTitle: 'How to share with the team',
+    driveHelpStep1: 'Click "Export to Drive" to download the file',
+    driveHelpStep2: 'Drag the file to the team shared folder in Google Drive',
+    driveHelpStep3: 'Other CSMs can click "Import from Drive" to load the assessment',
     evolutionTrend: 'Evolution Trend',
     noHistory: 'No previous assessments found',
     compareWith: 'Compare with',
@@ -2673,8 +2695,21 @@ function generateRoadmapToNextLevel(currentLevel, dimensions, data, lang) {
 }
 
 function assessPlatformAdoption(data, lang) {
-  // Rebalanced v4: baseline 0.5 (was 0), linear product breadth,
-  // hr/user quality check, advanced features gated on maturity.
+  // Rebalanced v5 (V3-Suave 2026-04-27): reduces "size bonus" bias and adds
+  // soft penalties for low-engagement signals.
+  // 
+  // Key changes from v4:
+  //   - productCount weight: 1.5 → 1.0 (was 30% of total, now 20%)
+  //   - infra/apm scale bonuses: 0.5 → 0.35 (less reward for raw size)
+  //   - Advanced features bonuses: 0.5 → 0.35 (having ≠ using well)
+  //   - NEW penalty: users < 50 (-0.25)
+  //   - NEW penalty: tsd < 50 days (-0.25)
+  //   - NEW penalty: customDashboards < 30% (-0.25)
+  //
+  // Rationale: previous version inflated scores for enterprise customers with
+  // many products and large fleets, regardless of how they USED Datadog.
+  // V3 pulls the average down ~0.4-0.7 points and improves discrimination
+  // between "big customer" and "mature customer".
   let score = 0.5;
   const signals = [];
   const issues = [];
@@ -2686,9 +2721,9 @@ function assessPlatformAdoption(data, lang) {
     return ((value - minVal) / (maxVal - minVal)) * maxPoints;
   };
   
-  // Product breadth - linear scoring (was 3-tier)
+  // Product breadth - linear scoring (V3: max reduced from 1.5 to 1.0)
   const productCount = data.historicalMRR.productCount;
-  const pcScore = linearScore(productCount, 5, 25, 1.5);
+  const pcScore = linearScore(productCount, 5, 25, 1.0);
   score += pcScore;
   if (productCount >= 20) {
     signals.push(lang === 'pt' 
@@ -2711,15 +2746,18 @@ function assessPlatformAdoption(data, lang) {
     const cd = data.platformUtilization.customDashboardsRatio || 0;
     const tsd = data.platformUtilization.timeSpentDays || 0;
     
-    // Users - linear 50 to 800
+    // Users - linear 50 to 800 (V3: NEW penalty for users < 50)
     const userScore = linearScore(users, 50, 800, 0.75);
     score += userScore;
     if (userScore > 0.4) {
       signals.push(lang === 'pt'
         ? `Base de usuários ativa (${users}) +${userScore.toFixed(2)}`
         : `Active user base (${users}) +${userScore.toFixed(2)}`);
-    } else if (users < 50) {
-      issues.push(lang === 'pt' ? `Poucos usuários ativos (${users})` : `Few active users (${users})`);
+    } else if (users > 0 && users < 50) {
+      score -= 0.25;
+      issues.push(lang === 'pt'
+        ? `Poucos usuários ativos (${users}) -0.25`
+        : `Few active users (${users}) -0.25`);
     }
     
     // Hours per user - CRITICAL for real adoption
@@ -2740,7 +2778,7 @@ function assessPlatformAdoption(data, lang) {
         : `Shallow usage (only ${avgHr}h/user) -0.25`);
     }
     
-    // Custom dashboards
+    // Custom dashboards (V3: NEW penalty for cd < 30%)
     if (cd >= 0.7) {
       score += 0.5;
       signals.push(lang === 'pt'
@@ -2748,9 +2786,14 @@ function assessPlatformAdoption(data, lang) {
         : `Strong customization (${(cd*100).toFixed(0)}% custom dashboards) +0.5`);
     } else if (cd >= 0.5) {
       score += 0.25;
+    } else if (cd > 0 && cd < 0.3) {
+      score -= 0.25;
+      issues.push(lang === 'pt'
+        ? `Baixa customização (${(cd*100).toFixed(0)}% dashboards custom) -0.25`
+        : `Low customization (${(cd*100).toFixed(0)}% custom dashboards) -0.25`);
     }
     
-    // Time on platform
+    // Time on platform (V3: NEW penalty for tsd < 50)
     if (tsd > 500) {
       score += 0.5;
       signals.push(lang === 'pt'
@@ -2758,51 +2801,52 @@ function assessPlatformAdoption(data, lang) {
         : `High operational reliance (${tsd} days) +0.5`);
     } else if (tsd > 200) {
       score += 0.25;
-    } else if (tsd < 50 && tsd > 0) {
+    } else if (tsd > 0 && tsd < 50) {
+      score -= 0.25;
       issues.push(lang === 'pt'
-        ? `Uso esporádico da plataforma (${tsd} dias)`
-        : `Sporadic platform usage (${tsd} days)`);
+        ? `Uso esporádico da plataforma (${tsd} dias) -0.25`
+        : `Sporadic platform usage (${tsd} days) -0.25`);
     }
   }
   
-  // Infrastructure scale
+  // Infrastructure scale (V3: top tier reduced from 0.5 to 0.35)
   const infra = data.healthCheck.infraHostsAvg;
   if (infra > 5000) {
-    score += 0.5;
+    score += 0.35;
     signals.push(lang === 'pt'
-      ? `Escala enterprise (${infra.toFixed(0)} hosts) +0.5`
-      : `Enterprise scale (${infra.toFixed(0)} hosts) +0.5`);
+      ? `Escala enterprise (${infra.toFixed(0)} hosts) +0.35`
+      : `Enterprise scale (${infra.toFixed(0)} hosts) +0.35`);
   } else if (infra > 500) {
-    score += 0.25;
+    score += 0.20;
   }
   
-  // APM coverage
+  // APM coverage (V3: top tier reduced from 0.5 to 0.35)
   const apm = data.healthCheck.apmHostsAvg;
   if (apm > 2000) {
-    score += 0.5;
+    score += 0.35;
     signals.push(lang === 'pt'
-      ? `APM em larga escala (${apm.toFixed(0)} hosts) +0.5`
-      : `APM at scale (${apm.toFixed(0)} hosts) +0.5`);
+      ? `APM em larga escala (${apm.toFixed(0)} hosts) +0.35`
+      : `APM at scale (${apm.toFixed(0)} hosts) +0.35`);
   } else if (apm > 300) {
-    score += 0.25;
+    score += 0.20;
   }
   
-  // Advanced features
+  // Advanced features (V3: bonuses reduced from 0.5 to 0.35 — having ≠ using)
   const products = data.historicalMRR.products || {};
   if (products.llm_observability && products.application_security_host) {
-    score += 0.5;
+    score += 0.35;
     signals.push(lang === 'pt'
-      ? 'Features modernas (LLM + AppSec) +0.5'
-      : 'Modern features (LLM + AppSec) +0.5');
+      ? 'Features modernas (LLM + AppSec) +0.35'
+      : 'Modern features (LLM + AppSec) +0.35');
   }
   
   if (products.rum_replay && products.synthetics_browser_checks && products.synthetics_mobile) {
-    score += 0.5;
+    score += 0.35;
     signals.push(lang === 'pt'
-      ? 'Monitoramento digital completo +0.5'
-      : 'Complete digital monitoring +0.5');
+      ? 'Monitoramento digital completo +0.35'
+      : 'Complete digital monitoring +0.35');
   } else if (products.rum_replay || products.synthetics_browser_checks) {
-    score += 0.25;
+    score += 0.15;
   }
   
   const finalScore = Math.max(0, Math.min(score, 5));
@@ -2812,8 +2856,8 @@ function assessPlatformAdoption(data, lang) {
     issues,
     level: Math.max(0, Math.min(Math.round(finalScore), 5)),
     rationale: lang === 'pt'
-      ? `Adoption rebalanceada: baseline 0.5 + produtos (${productCount}) + uso qualidade (h/user) + escala + features avançadas`
-      : `Rebalanced adoption: baseline 0.5 + products (${productCount}) + quality usage (h/user) + scale + advanced features`
+      ? `Adoption v5 (V3-Suave): baseline 0.5 + produtos (${productCount}) + qualidade de uso + escala balanceada + features (com penalidades suaves para baixo engajamento)`
+      : `Adoption v5 (V3-Soft): baseline 0.5 + products (${productCount}) + quality usage + balanced scale + features (with soft penalties for low engagement)`
   };
 }
 
@@ -2964,6 +3008,24 @@ function assessOperationalGovernance(data, lang) {
         ? 'Ownership distribuído (dashboards + users) +0.25'
         : 'Distributed ownership (dashboards + users) +0.25');
     }
+    
+    // Agent fleet hygiene (NEW v27 - bonus field)
+    // Datadog target is ≤4 distinct agent versions in fleet.
+    // More versions = harder to maintain, troubleshoot, and standardize.
+    const versions = data.platformUtilization.agentVersionsCount;
+    if (versions !== undefined && versions !== null && !isNaN(versions)) {
+      if (versions <= 4) {
+        score += 0.25;
+        signals.push(lang === 'pt'
+          ? `Frota de agents padronizada (${versions} versões) +0.25`
+          : `Standardized agent fleet (${versions} versions) +0.25`);
+      } else if (versions > 8) {
+        score -= 0.25;
+        issues.push(lang === 'pt'
+          ? `Frota desorganizada (${versions} versões de agent, target ≤4) -0.25`
+          : `Fragmented fleet (${versions} agent versions, target ≤4) -0.25`);
+      }
+    }
   }
   
   const finalScore = Math.max(0, Math.min(score, 5));
@@ -3087,6 +3149,24 @@ function assessTelemetryQuality(data, lang) {
     signals.push(lang === 'pt'
       ? `Telemetria bem estruturada (env tag ${tag.toFixed(1)}%) +0.25`
       : `Well-structured telemetry (env tag ${tag.toFixed(1)}%) +0.25`);
+  }
+  
+  // K8s tagging quality (NEW v27 - bonus field)
+  // Catches the silent gap where hosts are well-tagged but K8s containers aren't.
+  // Penalty is suave (-0.25) following V3-Suave style.
+  const k8s = data.healthCheck.k8sWithFullTags;
+  if (k8s !== undefined && k8s !== null && !isNaN(k8s)) {
+    if (k8s >= 70) {
+      score += 0.25;
+      signals.push(lang === 'pt'
+        ? `K8s bem instrumentado (${k8s.toFixed(1)}% tagged) +0.25`
+        : `K8s well-instrumented (${k8s.toFixed(1)}% tagged) +0.25`);
+    } else if (k8s < 50) {
+      score -= 0.25;
+      issues.push(lang === 'pt'
+        ? `Gap K8s: apenas ${k8s.toFixed(1)}% containers com env+service+version -0.25`
+        : `K8s gap: only ${k8s.toFixed(1)}% containers with env+service+version -0.25`);
+    }
   }
   
   const finalScore = Math.max(0, Math.min(score, 5));
@@ -3332,6 +3412,25 @@ function assessCostGovernance(data, lang) {
     issues.push(lang === 'pt'
       ? `${pc} produtos ativos mas governance de custo limitada`
       : `${pc} active products but limited cost governance`);
+  }
+  
+  // APM Indexed Ratio (NEW v27 - bonus field, only available for APM Pro plan)
+  // High ratio = over-indexing = wasted spend.
+  // < 1% is excellent (good control), 1-5% is OK, > 5% suggests review needed.
+  // Field is OPTIONAL - clients without APM Pro won't have it (no penalty).
+  const indexedRatio = data.healthCheck.apmIndexedRatio;
+  if (indexedRatio !== undefined && indexedRatio !== null && !isNaN(indexedRatio)) {
+    if (indexedRatio <= 1) {
+      score += 0.25;
+      signals.push(lang === 'pt'
+        ? `Indexação APM bem controlada (${indexedRatio.toFixed(2)}%) +0.25`
+        : `Well-controlled APM indexing (${indexedRatio.toFixed(2)}%) +0.25`);
+    } else if (indexedRatio > 5) {
+      score -= 0.25;
+      issues.push(lang === 'pt'
+        ? `Indexação APM elevada (${indexedRatio.toFixed(1)}%) sugere over-indexação -0.25`
+        : `High APM indexing (${indexedRatio.toFixed(1)}%) suggests over-indexing -0.25`);
+    }
   }
   
   // HARD CAP at 3.0 - need explicit evidence (usage attribution, cost alerts)
@@ -4898,6 +4997,18 @@ function parsePlatformUtilizationText(text) {
     result.fields.datadogSupportDays = parseFloat(supportMatch[1]);
   }
   
+  // Bonus: Agent Versions Count (NEW v27)
+  // Counts distinct Datadog agent versions (X.YY.Z format starting with 6. or 7.)
+  // appearing anywhere in the PDF. Datadog target is ≤4 distinct versions.
+  // Found mostly in "Agent Updates over last month" section.
+  const versionMatches = [...text.matchAll(/\b([67]\.\d+\.\d+)\b/g)]
+    .map(m => m[1]);
+  const uniqueVersions = new Set(versionMatches);
+  if (uniqueVersions.size > 0) {
+    result.fields.agentVersionsCount = uniqueVersions.size;
+    // Note: NOT counted in extractedCount (bonus metric)
+  }
+  
   if (result.extractedCount >= 2) {
     result.success = true;
   } else {
@@ -5024,6 +5135,45 @@ function parseHealthCheckText(text) {
   if (k8sVal !== null && !isNaN(k8sVal)) {
     result.fields.k8sWithFullTags = k8sVal;
     // Note: NOT counted in extractedCount (bonus metric)
+  }
+  
+  // --- BONUS: APM Indexed Ratio (NEW v27) ---
+  // From "Ratio of indexed to ingested spans" chart in Health Check.
+  // Only present for customers on APM Pro plan with Allotment chart.
+  //
+  // Layout (Itaú example):
+  //   Ratio of indexed to ingested spans  Past 1 Month 1mo
+  //   ...chart axes...
+  //   *  Ingested spans  25.8G spans  ...
+  //   *  Indexed spans   133M items   ...
+  //   *  Percentage      0.58         <-- WANT THIS (AVG)
+  //
+  // Customers without APM Pro have ONLY axis labels under "Ratio of indexed..."
+  // and no Ingested/Indexed table rows. The downstream "Percentage of Logs
+  // Correlated" can leak into our match, causing false positives.
+  //
+  // GUARD: Require BOTH "Ingested spans" AND "Indexed spans" inside the chunk
+  // to confirm the actual APM Pro Allotment table is present.
+  const indexedRatioChunk = text.match(
+    /Ratio of indexed to ingested[\s\S]{0,2000}/
+  );
+  if (indexedRatioChunk) {
+    const startIdx = indexedRatioChunk.index;
+    const chunk = text.substring(startIdx, startIdx + 2000);
+    // Validate that the actual table rows are present (not just axis labels)
+    const hasTable = chunk.includes('Ingested spans') && chunk.includes('Indexed spans');
+    if (hasTable) {
+      // Match the Percentage row: "Percentage" then the first number (AVG)
+      const pctMatch = chunk.match(/Percentage[^\d\n]*([\d.]+)/);
+      if (pctMatch) {
+        const irVal = parseFloat(pctMatch[1]);
+        // Sanity check: indexedRatio is typically 0-100 (often < 5)
+        if (!isNaN(irVal) && irVal >= 0 && irVal < 100) {
+          result.fields.apmIndexedRatio = irVal;
+          // Note: NOT counted in extractedCount (bonus, optional)
+        }
+      }
+    }
   }
   
   // Consider successful if we got at least 5 of the 9 core fields
@@ -6196,6 +6346,7 @@ function ObservabilityMaturityAssessment({ onBack, onNavigateToAdmin, initialLan
                 onReset={handleReset}
                 assessmentHistory={assessmentHistory}
                 onSaveAssessment={handleSaveAssessment}
+                onAssessmentImported={(updated) => setAssessmentHistory(updated)}
               />
             </>
           )}
@@ -6468,10 +6619,11 @@ const EvolutionChart = ({ history, currentAssessment, language }) => {
 // Results Component
 // When viewMode=true, renders the report in "view-only" mode for display in the
 // AssessmentReportModal. Hides Save/New/History buttons, shows Export + Close.
-function AssessmentResults({ assessment, serviceName, teamName, businessOwner, technicalOwner, accountId, language, onReset, assessmentHistory, onSaveAssessment, viewMode = false, onClose }) {
+function AssessmentResults({ assessment, serviceName, teamName, businessOwner, technicalOwner, accountId, language, onReset, assessmentHistory, onSaveAssessment, viewMode = false, onClose, onAssessmentImported }) {
   const t = TRANSLATIONS[language];
   const level = MATURITY_LEVELS[assessment.finalLevel];
   const [showHistoryPanel, setShowHistoryPanel] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState('');
   
   return (
     <>
@@ -7268,6 +7420,22 @@ function AssessmentResults({ assessment, serviceName, teamName, businessOwner, t
       )}
 
       {/* Actions */}
+      {uploadStatus && (
+        <div style={{
+          textAlign: 'center',
+          padding: '0.75rem 1rem',
+          marginBottom: '1rem',
+          background: uploadStatus.startsWith('❌') ? '#fef2f2' : (uploadStatus.startsWith('⚠️') ? '#fffbeb' : '#f0fdf4'),
+          border: `1px solid ${uploadStatus.startsWith('❌') ? '#fca5a5' : (uploadStatus.startsWith('⚠️') ? '#fcd34d' : '#86efac')}`,
+          color: uploadStatus.startsWith('❌') ? '#991b1b' : (uploadStatus.startsWith('⚠️') ? '#92400e' : '#166534'),
+          borderRadius: '8px',
+          fontSize: '0.9rem',
+          fontWeight: '500'
+        }}>
+          {uploadStatus}
+        </div>
+      )}
+      
       <div style={{ textAlign: 'center', display: 'flex', gap: '1rem', justifyContent: 'center', flexWrap: 'wrap' }}>
         {!viewMode && (
           <button
@@ -7305,6 +7473,136 @@ function AssessmentResults({ assessment, serviceName, teamName, businessOwner, t
           >
             {t.viewHistory} ({assessmentHistory.length})
           </button>
+        )}
+        
+        {/* Drive Sync: Export single assessment */}
+        {!viewMode && assessment && (
+          <button
+            onClick={() => {
+              if (!assessment) return;
+              try {
+                const fullAssessment = {
+                  assessmentId: `${accountId || 'no-id'}-${Date.now()}`,
+                  customerId: accountId,
+                  accountId: accountId,
+                  teamName: teamName || serviceName,
+                  customerName: serviceName,
+                  businessOwner,
+                  technicalOwner,
+                  date: new Date().toISOString(),
+                  rawScore: assessment.rawScore,
+                  finalLevel: assessment.finalLevel,
+                  dimensions: assessment.dimensions,
+                  gatings: assessment.gatings,
+                  // Include the full assessment data for re-import
+                  fullData: assessment
+                };
+                const result = exportAssessmentToFile(fullAssessment);
+                setUploadStatus(language === 'pt'
+                  ? `📤 ${result.filename} baixado. Suba para o Drive da equipe.`
+                  : `📤 ${result.filename} downloaded. Upload to team Drive.`);
+                setTimeout(() => setUploadStatus(''), 5000);
+              } catch (err) {
+                console.error('Export error:', err);
+                setUploadStatus('❌ ' + err.message);
+                setTimeout(() => setUploadStatus(''), 5000);
+              }
+            }}
+            style={{
+              background: '#0ea5e9',
+              color: 'white',
+              border: 'none',
+              padding: '0.75rem 2rem',
+              fontSize: '1rem',
+              fontWeight: '600',
+              borderRadius: '8px',
+              cursor: 'pointer'
+            }}
+            title={language === 'pt' 
+              ? 'Baixa um arquivo JSON do assessment atual. Arraste para a pasta compartilhada do Drive.' 
+              : 'Downloads a JSON file of the current assessment. Drag to the shared Drive folder.'}
+          >
+            📤 {t.exportToDrive}
+          </button>
+        )}
+        
+        {/* Drive Sync: Import from file */}
+        {!viewMode && (
+          <>
+            <input
+              type="file"
+              id="drive-import-input"
+              accept=".json,application/json"
+              multiple
+              style={{ display: 'none' }}
+              onChange={async (e) => {
+                const files = Array.from(e.target.files || []);
+                if (files.length === 0) return;
+                
+                let totalImported = 0;
+                let totalSkipped = 0;
+                const allErrors = [];
+                
+                for (const file of files) {
+                  try {
+                    const result = await importAssessmentFromFile(file);
+                    totalImported += result.imported;
+                    totalSkipped += result.skipped;
+                    allErrors.push(...result.errors);
+                  } catch (err) {
+                    allErrors.push(`${file.name}: ${err.message}`);
+                  }
+                }
+                
+                // Reload history if we imported into the current accountId
+                if (totalImported > 0 && accountId && onAssessmentImported) {
+                  const storageKey = `datadog-assessments-${accountId}`;
+                  const updated = JSON.parse(localStorage.getItem(storageKey) || '[]');
+                  onAssessmentImported(updated);
+                }
+                
+                let msg;
+                if (totalImported > 0 && allErrors.length === 0) {
+                  msg = language === 'pt'
+                    ? `✅ ${totalImported} assessment(s) importado(s)`
+                    : `✅ ${totalImported} assessment(s) imported`;
+                } else if (totalImported > 0) {
+                  msg = language === 'pt'
+                    ? `⚠️ ${totalImported} importado(s), ${allErrors.length} erro(s)`
+                    : `⚠️ ${totalImported} imported, ${allErrors.length} error(s)`;
+                  console.warn('Import errors:', allErrors);
+                } else {
+                  msg = language === 'pt'
+                    ? `❌ Nenhum importado. ${allErrors.length} erro(s) - veja o console.`
+                    : `❌ None imported. ${allErrors.length} error(s) - check console.`;
+                  console.error('Import errors:', allErrors);
+                }
+                setUploadStatus(msg);
+                setTimeout(() => setUploadStatus(''), 6000);
+                
+                // Reset input so the same file can be re-selected later
+                e.target.value = '';
+              }}
+            />
+            <button
+              onClick={() => document.getElementById('drive-import-input').click()}
+              style={{
+                background: '#8b5cf6',
+                color: 'white',
+                border: 'none',
+                padding: '0.75rem 2rem',
+                fontSize: '1rem',
+                fontWeight: '600',
+                borderRadius: '8px',
+                cursor: 'pointer'
+              }}
+              title={language === 'pt'
+                ? 'Importa um ou mais arquivos JSON de assessments baixados do Drive.'
+                : 'Imports one or more assessment JSON files downloaded from Drive.'}
+            >
+              📥 {t.importFromDrive}
+            </button>
+          </>
         )}
         
         <button
@@ -7373,6 +7671,242 @@ function AssessmentResults({ assessment, serviceName, teamName, businessOwner, t
 // Manages multiple customers, org units, and assessments
 
 // Admin Console Translations
+// =====================================================
+// DRIVE SYNC - Export/Import for Google Drive sharing
+// =====================================================
+// 
+// Strategy: instead of automatic cloud sync (blocked by CORS in this 
+// environment), we let CSMs export assessments as JSON files that they 
+// drag to a shared Google Drive folder. Other CSMs can import those 
+// JSONs back into the app.
+//
+// Pros: zero infrastructure, zero authentication, works offline, 
+// CSMs do what they already know (drag files in Drive).
+//
+// Cons: not real-time, manual sync step, last-write-wins conflicts.
+// For an internal team of 5-10 CSMs, these tradeoffs are acceptable.
+// =====================================================
+
+/**
+ * Sanitize a string for use as a filename (remove unsafe chars).
+ */
+function sanitizeFilename(s) {
+  return String(s || '')
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
+    .replace(/\s+/g, '-')
+    .substring(0, 80);
+}
+
+/**
+ * Trigger a browser download of a string as a file.
+ */
+function downloadFile(filename, content, mimeType) {
+  const blob = new Blob([content], { type: mimeType || 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  // Revoke after a tick to ensure download starts
+  setTimeout(() => URL.revokeObjectURL(url), 100);
+}
+
+/**
+ * Build a friendly filename for a single assessment.
+ * Example: "DMA-Serasa-B2C-700722-2026-04-27.json"
+ */
+function buildAssessmentFilename(assessment) {
+  const name = sanitizeFilename(assessment.teamName || assessment.customerName || 'unnamed');
+  const accountId = sanitizeFilename(assessment.accountId || 'no-id');
+  const date = (assessment.date || new Date().toISOString()).substring(0, 10);
+  return `DMA-${name}-${accountId}-${date}.json`;
+}
+
+/**
+ * Export a single assessment to a downloadable JSON file.
+ * The CSM then drags this file to the team's shared Drive folder.
+ */
+function exportAssessmentToFile(assessment) {
+  const payload = {
+    schema: 'datadog-maturity-assessment',
+    schemaVersion: 1,
+    exportedAt: new Date().toISOString(),
+    assessment: assessment
+  };
+  const filename = buildAssessmentFilename(assessment);
+  const content = JSON.stringify(payload, null, 2);
+  downloadFile(filename, content, 'application/json');
+  return { filename, size: content.length };
+}
+
+/**
+ * Export ALL assessments from localStorage as a single bundle file.
+ * Useful for periodic backups or migrations.
+ */
+function exportAllAssessmentsToFile() {
+  const allAssessments = [];
+  
+  // Walk all localStorage keys for assessment data
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (!key || !key.startsWith('datadog-assessments-')) continue;
+    
+    try {
+      const accountId = key.replace('datadog-assessments-', '');
+      const list = JSON.parse(localStorage.getItem(key) || '[]');
+      list.forEach(a => {
+        allAssessments.push({ ...a, _accountId: accountId });
+      });
+    } catch (err) {
+      console.warn('Skipping malformed key:', key, err);
+    }
+  }
+  
+  const payload = {
+    schema: 'datadog-maturity-assessment-bundle',
+    schemaVersion: 1,
+    exportedAt: new Date().toISOString(),
+    count: allAssessments.length,
+    assessments: allAssessments
+  };
+  
+  const date = new Date().toISOString().substring(0, 10);
+  const filename = `DMA-bundle-all-${date}.json`;
+  const content = JSON.stringify(payload, null, 2);
+  downloadFile(filename, content, 'application/json');
+  return { filename, count: allAssessments.length, size: content.length };
+}
+
+/**
+ * Read a File object from <input type="file"> and parse it as JSON.
+ * Returns a Promise resolving to the parsed object.
+ */
+function readJsonFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const text = reader.result;
+        const parsed = JSON.parse(text);
+        resolve(parsed);
+      } catch (err) {
+        reject(new Error(`Invalid JSON in "${file.name}": ${err.message}`));
+      }
+    };
+    reader.onerror = () => reject(new Error(`Failed to read "${file.name}"`));
+    reader.readAsText(file);
+  });
+}
+
+/**
+ * Import a single assessment file (or bundle) into localStorage.
+ * Detects the schema and handles both formats.
+ * 
+ * Returns: { imported: number, skipped: number, errors: string[] }
+ */
+async function importAssessmentFromFile(file) {
+  const result = { imported: 0, skipped: 0, errors: [] };
+  
+  let parsed;
+  try {
+    parsed = await readJsonFile(file);
+  } catch (err) {
+    result.errors.push(err.message);
+    return result;
+  }
+  
+  // Detect format
+  if (parsed.schema === 'datadog-maturity-assessment-bundle' && Array.isArray(parsed.assessments)) {
+    // Bundle: import each
+    for (const a of parsed.assessments) {
+      const accountId = a._accountId || a.accountId;
+      if (!accountId) {
+        result.skipped++;
+        result.errors.push(`Assessment without accountId in bundle`);
+        continue;
+      }
+      // Strip helper field
+      const clean = { ...a };
+      delete clean._accountId;
+      addAssessmentToStorage(accountId, clean);
+      result.imported++;
+    }
+  } else if (parsed.schema === 'datadog-maturity-assessment' && parsed.assessment) {
+    // Single
+    const a = parsed.assessment;
+    if (!a.accountId) {
+      result.errors.push('Assessment without accountId');
+      result.skipped++;
+    } else {
+      addAssessmentToStorage(a.accountId, a);
+      result.imported++;
+    }
+  } else if (parsed.assessmentId && parsed.accountId) {
+    // Legacy: raw assessment object (no schema wrapper)
+    addAssessmentToStorage(parsed.accountId, parsed);
+    result.imported++;
+  } else {
+    result.errors.push(`Unrecognized format in "${file.name}". Expected DMA schema.`);
+    result.skipped++;
+  }
+  
+  return result;
+}
+
+/**
+ * Insert/merge an assessment into localStorage at the right key.
+ * Avoids duplicates by checking assessmentId.
+ */
+function addAssessmentToStorage(accountId, assessment) {
+  const storageKey = `datadog-assessments-${accountId}`;
+  const existing = JSON.parse(localStorage.getItem(storageKey) || '[]');
+  
+  // Check duplicate by assessmentId
+  const existingIdx = existing.findIndex(a => 
+    String(a.assessmentId) === String(assessment.assessmentId)
+  );
+  
+  if (existingIdx >= 0) {
+    // Update in place
+    existing[existingIdx] = assessment;
+  } else {
+    // Insert at front
+    existing.unshift(assessment);
+  }
+  
+  // Keep most recent 4 (same policy as save)
+  const trimmed = existing.slice(0, 4);
+  localStorage.setItem(storageKey, JSON.stringify(trimmed));
+  
+  // Update global index
+  const globalIndexKey = 'datadog-global-assessment-index';
+  const globalIndex = JSON.parse(localStorage.getItem(globalIndexKey) || '[]');
+  
+  const globalIdx = globalIndex.findIndex(g => 
+    String(g.assessmentId) === String(assessment.assessmentId)
+  );
+  
+  const indexEntry = {
+    assessmentId: assessment.assessmentId,
+    customerId: assessment.customerId,
+    accountId: assessment.accountId,
+    teamName: assessment.teamName,
+    date: assessment.date,
+    score: assessment.rawScore || assessment.score,
+    level: assessment.finalLevel || assessment.level
+  };
+  
+  if (globalIdx >= 0) {
+    globalIndex[globalIdx] = indexEntry;
+  } else {
+    globalIndex.unshift(indexEntry);
+  }
+  
+  localStorage.setItem(globalIndexKey, JSON.stringify(globalIndex.slice(0, 100)));
+}
+
 // =====================================================
 // ASSESSMENT MANAGEMENT - Edit/Delete utilities
 // =====================================================
@@ -7876,6 +8410,12 @@ const ADMIN_TRANSLATIONS = {
     // Customers View
     customersCount: 'Clientes',
     searchCustomer: 'Buscar cliente...',
+    exportSelected: 'Exportar Atual',
+    exportAll: 'Exportar Tudo',
+    importFiles: 'Importar do Drive',
+    selectCustomerFirst: 'Selecione um cliente para exportar',
+    portfolioExported: 'Portfolio exportado',
+    nothingToExport: 'Nenhum cliente para exportar',
     sortByScore: 'Ordenar por Score',
     sortByTrend: 'Ordenar por Tendência',
     sortByCount: 'Ordenar por # Assessments',
@@ -8033,6 +8573,12 @@ const ADMIN_TRANSLATIONS = {
     // Customers View
     customersCount: 'Customers',
     searchCustomer: 'Search customer...',
+    exportSelected: 'Export Current',
+    exportAll: 'Export All',
+    importFiles: 'Import from Drive',
+    selectCustomerFirst: 'Select a customer to export',
+    portfolioExported: 'Portfolio exported',
+    nothingToExport: 'No customer to export',
     sortByScore: 'Sort by Score',
     sortByTrend: 'Sort by Trend',
     sortByCount: 'Sort by # Assessments',
@@ -8251,12 +8797,44 @@ function DatadogAdminConsole({ onBack, onNavigateToAssessment, initialLanguage }
         ? sorted[0].rawScore - sorted[1].rawScore 
         : 0;
       
+      // Calculate balance stdev across the 5 dimensions of latest assessment
+      // Lower stdev = more balanced/homogeneous profile
+      // Higher stdev = extremes (great in some dims, poor in others)
+      let balanceStdev = null;
+      let balanceLabel = 'unknown';
+      const latestDims = sorted[0]?.dimensions;
+      if (latestDims) {
+        const dimScores = [
+          latestDims.adoption,
+          latestDims.governance,
+          latestDims.quality,
+          latestDims.alerting,
+          latestDims.cost
+        ].filter(s => typeof s === 'number' && !isNaN(s));
+        
+        if (dimScores.length >= 3) {
+          const mean = dimScores.reduce((a, b) => a + b, 0) / dimScores.length;
+          const variance = dimScores.reduce((sum, s) => sum + Math.pow(s - mean, 2), 0) / dimScores.length;
+          balanceStdev = Math.sqrt(variance);
+          
+          // Classify balance:
+          //   <0.6  = balanced (uniform across dims)
+          //   0.6-1.2 = moderate variance
+          //   >1.2 = unbalanced (extremes)
+          if (balanceStdev < 0.6) balanceLabel = 'balanced';
+          else if (balanceStdev < 1.2) balanceLabel = 'moderate';
+          else balanceLabel = 'unbalanced';
+        }
+      }
+      
       return {
         ...group,
         accountIds: Array.from(group.accountIds),
         orgUnits: Array.from(group.orgUnits),
         avgScore,
         trend,
+        balanceStdev,
+        balanceLabel,
         latestAssessment: sorted[0],
         assessmentCount: group.assessments.length
       };
@@ -8429,7 +9007,7 @@ function DatadogAdminConsole({ onBack, onNavigateToAssessment, initialLanguage }
       {/* Main Content */}
       <div style={{ maxWidth: '1400px', margin: '0 auto', padding: '2rem' }}>
         {view === 'dashboard' && <DashboardView kpis={portfolioKPIs} customers={customerGroups} t={t} />}
-        {view === 'customers' && <CustomersView customers={customerGroups} onSelectCustomer={setSelectedCustomer} t={t} />}
+        {view === 'customers' && <CustomersView customers={customerGroups} onSelectCustomer={setSelectedCustomer} t={t} language={language} onDataChanged={loadAllAssessments} />}
         {view === 'portfolio' && <PortfolioView customers={customerGroups} kpis={portfolioKPIs} t={t} />}
         {view === 'heatmap' && <HeatmapView customers={customerGroups} t={t} />}
         {view === 'compare' && <CompareView customers={customerGroups} t={t} />}
@@ -8621,9 +9199,11 @@ function KPICard({ title, value, color, subtitle }) {
 }
 
 // Customers View
-function CustomersView({ customers, onSelectCustomer, t }) {
+function CustomersView({ customers, onSelectCustomer, t, language, onDataChanged }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [sortBy, setSortBy] = useState('avgScore'); // avgScore | trend | assessmentCount
+  const [adminStatus, setAdminStatus] = useState('');
+  const [exportTargetId, setExportTargetId] = useState(''); // for "Export Current"
 
   const filteredCustomers = useMemo(() => {
     let filtered = customers;
@@ -8642,8 +9222,231 @@ function CustomersView({ customers, onSelectCustomer, t }) {
     });
   }, [customers, searchTerm, sortBy]);
 
+  // Helper: show admin status with auto-clear
+  const showStatus = (msg, durationMs = 5000) => {
+    setAdminStatus(msg);
+    setTimeout(() => setAdminStatus(''), durationMs);
+  };
+
+  // Export current selected customer (all its assessments)
+  const handleExportCurrent = () => {
+    if (!exportTargetId) {
+      showStatus(language === 'pt'
+        ? '⚠️ Selecione um cliente abaixo para exportar'
+        : '⚠️ Select a customer below to export');
+      return;
+    }
+    const customer = customers.find(c => c.customerId === exportTargetId);
+    if (!customer) {
+      showStatus('❌ ' + (language === 'pt' ? 'Cliente não encontrado' : 'Customer not found'));
+      return;
+    }
+    try {
+      const storageKey = `datadog-assessments-${customer.customerId}`;
+      const list = JSON.parse(localStorage.getItem(storageKey) || '[]');
+      if (list.length === 0) {
+        showStatus(language === 'pt' ? '⚠️ Cliente sem assessments' : '⚠️ No assessments for this customer');
+        return;
+      }
+      const payload = {
+        schema: 'datadog-maturity-assessment-bundle',
+        schemaVersion: 1,
+        exportedAt: new Date().toISOString(),
+        scope: 'single-customer',
+        customerId: customer.customerId,
+        count: list.length,
+        assessments: list.map(a => ({ ...a, _accountId: customer.customerId }))
+      };
+      const teamName = sanitizeFilename(customer.latestAssessment?.teamName || customer.customerId);
+      const date = new Date().toISOString().substring(0, 10);
+      const filename = `DMA-${teamName}-${customer.customerId}-${date}.json`;
+      downloadFile(filename, JSON.stringify(payload, null, 2), 'application/json');
+      showStatus(language === 'pt'
+        ? `📤 ${filename} baixado (${list.length} assessment${list.length > 1 ? 's' : ''})`
+        : `📤 ${filename} downloaded (${list.length} assessment${list.length > 1 ? 's' : ''})`);
+    } catch (err) {
+      console.error('Export error:', err);
+      showStatus('❌ ' + err.message);
+    }
+  };
+
+  // Export all customers as a single bundle
+  const handleExportAll = () => {
+    try {
+      if (customers.length === 0) {
+        showStatus('⚠️ ' + t.nothingToExport);
+        return;
+      }
+      const result = exportAllAssessmentsToFile();
+      showStatus(language === 'pt'
+        ? `📦 ${result.filename} baixado (${result.count} assessments)`
+        : `📦 ${result.filename} downloaded (${result.count} assessments)`);
+    } catch (err) {
+      console.error('Export all error:', err);
+      showStatus('❌ ' + err.message);
+    }
+  };
+
+  // Import multiple JSON files
+  const handleImport = async (files) => {
+    if (!files || files.length === 0) return;
+    let totalImported = 0;
+    let totalSkipped = 0;
+    const allErrors = [];
+    
+    for (const file of files) {
+      try {
+        const result = await importAssessmentFromFile(file);
+        totalImported += result.imported;
+        totalSkipped += result.skipped;
+        allErrors.push(...result.errors);
+      } catch (err) {
+        allErrors.push(`${file.name}: ${err.message}`);
+      }
+    }
+    
+    let msg;
+    if (totalImported > 0 && allErrors.length === 0) {
+      msg = language === 'pt'
+        ? `✅ ${totalImported} assessment(s) importado(s)`
+        : `✅ ${totalImported} assessment(s) imported`;
+    } else if (totalImported > 0) {
+      msg = language === 'pt'
+        ? `⚠️ ${totalImported} importado(s), ${allErrors.length} erro(s)`
+        : `⚠️ ${totalImported} imported, ${allErrors.length} error(s)`;
+      console.warn('Import errors:', allErrors);
+    } else {
+      msg = language === 'pt'
+        ? `❌ Nenhum importado. ${allErrors.length} erro(s) - veja o console.`
+        : `❌ None imported. ${allErrors.length} error(s) - check console.`;
+      console.error('Import errors:', allErrors);
+    }
+    showStatus(msg, 7000);
+    
+    // Trigger reload in parent
+    if (totalImported > 0 && onDataChanged) {
+      onDataChanged();
+    }
+  };
+
   return (
     <div>
+      {/* Drive Sync Action Bar */}
+      <div style={{ 
+        display: 'flex', 
+        justifyContent: 'flex-end', 
+        gap: '0.5rem', 
+        marginBottom: '1rem',
+        flexWrap: 'wrap'
+      }}>
+        <select
+          value={exportTargetId}
+          onChange={(e) => setExportTargetId(e.target.value)}
+          style={{
+            padding: '0.5rem 0.75rem',
+            border: '1px solid #d1d5db',
+            borderRadius: '6px',
+            fontSize: '0.875rem',
+            background: 'white',
+            color: '#374151',
+            minWidth: '200px'
+          }}
+          title={language === 'pt' ? 'Cliente para exportar individualmente' : 'Customer to export individually'}
+        >
+          <option value="">{language === 'pt' ? '-- Cliente para exportar --' : '-- Customer to export --'}</option>
+          {customers.map(c => (
+            <option key={c.customerId} value={c.customerId}>
+              {(c.latestAssessment?.teamName || c.customerId)} ({c.customerId})
+            </option>
+          ))}
+        </select>
+        
+        <button
+          onClick={handleExportCurrent}
+          disabled={!exportTargetId}
+          style={{
+            background: exportTargetId ? '#0ea5e9' : '#cbd5e1',
+            color: 'white',
+            border: 'none',
+            padding: '0.5rem 1rem',
+            fontSize: '0.875rem',
+            fontWeight: '600',
+            borderRadius: '6px',
+            cursor: exportTargetId ? 'pointer' : 'not-allowed'
+          }}
+          title={language === 'pt' 
+            ? 'Exporta todos os assessments do cliente selecionado'
+            : 'Exports all assessments for the selected customer'}
+        >
+          📤 {t.exportSelected}
+        </button>
+        
+        <button
+          onClick={handleExportAll}
+          style={{
+            background: '#0284c7',
+            color: 'white',
+            border: 'none',
+            padding: '0.5rem 1rem',
+            fontSize: '0.875rem',
+            fontWeight: '600',
+            borderRadius: '6px',
+            cursor: 'pointer'
+          }}
+          title={language === 'pt'
+            ? 'Exporta todo o portfolio em um único arquivo'
+            : 'Exports the entire portfolio in a single file'}
+        >
+          📦 {t.exportAll}
+        </button>
+        
+        <input
+          type="file"
+          id="admin-drive-import-input"
+          accept=".json,application/json"
+          multiple
+          style={{ display: 'none' }}
+          onChange={async (e) => {
+            await handleImport(Array.from(e.target.files || []));
+            e.target.value = '';
+          }}
+        />
+        <button
+          onClick={() => document.getElementById('admin-drive-import-input').click()}
+          style={{
+            background: '#8b5cf6',
+            color: 'white',
+            border: 'none',
+            padding: '0.5rem 1rem',
+            fontSize: '0.875rem',
+            fontWeight: '600',
+            borderRadius: '6px',
+            cursor: 'pointer'
+          }}
+          title={language === 'pt'
+            ? 'Importa um ou mais arquivos JSON do Drive'
+            : 'Imports one or more JSON files from Drive'}
+        >
+          📥 {t.importFiles}
+        </button>
+      </div>
+      
+      {/* Status message */}
+      {adminStatus && (
+        <div style={{
+          padding: '0.75rem 1rem',
+          marginBottom: '1rem',
+          background: adminStatus.startsWith('❌') ? '#fef2f2' : (adminStatus.startsWith('⚠️') ? '#fffbeb' : '#f0fdf4'),
+          border: `1px solid ${adminStatus.startsWith('❌') ? '#fca5a5' : (adminStatus.startsWith('⚠️') ? '#fcd34d' : '#86efac')}`,
+          color: adminStatus.startsWith('❌') ? '#991b1b' : (adminStatus.startsWith('⚠️') ? '#92400e' : '#166534'),
+          borderRadius: '6px',
+          fontSize: '0.875rem',
+          fontWeight: '500'
+        }}>
+          {adminStatus}
+        </div>
+      )}
+      
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
         <h2 style={{ fontSize: '1.75rem', fontWeight: '700', color: '#1f2937', margin: 0 }}>
           {t.customersCount} ({customers.length})
@@ -9030,12 +9833,27 @@ function HeatmapView({ customers, t }) {
           : 0;
         const worst = validScores.length > 0 ? Math.min(...validScores) : 0;
         
+        // Balance stdev: measures profile uniformity across the 5 dimensions
+        // Low stdev (<0.6) = balanced/uniform profile
+        // High stdev (>1.2) = extremes (great in some dims, poor in others)
+        let balanceStdev = null;
+        let balanceLabel = 'unknown';
+        if (validScores.length >= 3) {
+          const variance = validScores.reduce((sum, s) => sum + Math.pow(s - avg, 2), 0) / validScores.length;
+          balanceStdev = Math.sqrt(variance);
+          if (balanceStdev < 0.6) balanceLabel = 'balanced';
+          else if (balanceStdev < 1.2) balanceLabel = 'moderate';
+          else balanceLabel = 'unbalanced';
+        }
+        
         return {
           customerId: c.customerId,
           name: c.latestAssessment?.teamName || c.customerId,
           scores,
           avg,
-          worst
+          worst,
+          balanceStdev,
+          balanceLabel
         };
       });
 
@@ -9044,6 +9862,8 @@ function HeatmapView({ customers, t }) {
       return rows.sort((a, b) => a.name.localeCompare(b.name));
     } else if (sortBy === 'worst') {
       return rows.sort((a, b) => a.worst - b.worst); // lowest worst first
+    } else if (sortBy === 'balance') {
+      return rows.sort((a, b) => (b.balanceStdev || 0) - (a.balanceStdev || 0)); // most unbalanced first
     }
     return rows.sort((a, b) => b.avg - a.avg); // highest avg first
   }, [customers, sortBy]);
@@ -9265,6 +10085,20 @@ function HeatmapView({ customers, t }) {
                 }}>
                   {t.avgColumn}
                 </th>
+                <th style={{ 
+                  padding: '1rem', 
+                  textAlign: 'center', 
+                  fontWeight: '600', 
+                  color: '#6b7280',
+                  background: '#fafafa',
+                  borderLeft: '1px solid #e5e7eb',
+                  minWidth: '90px',
+                  fontSize: '0.875rem'
+                }} title={t.locale === 'pt-BR' 
+                  ? 'Desvio padrão entre dimensões. Baixo = perfil equilibrado. Alto = extremos.' 
+                  : 'Standard deviation across dimensions. Low = balanced profile. High = extremes.'}>
+                  σ {t.locale === 'pt-BR' ? '(balanço)' : '(balance)'}
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -9321,6 +10155,39 @@ function HeatmapView({ customers, t }) {
                       {row.avg.toFixed(2)}
                     </div>
                   </td>
+                  <td style={{ 
+                    padding: '0.5rem', 
+                    textAlign: 'center',
+                    background: '#fafafa',
+                    borderLeft: '1px solid #e5e7eb'
+                  }}>
+                    {row.balanceStdev !== null ? (
+                      <div style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '0.25rem',
+                        background: row.balanceLabel === 'unbalanced' ? '#fee2e2' 
+                                    : row.balanceLabel === 'moderate' ? '#fef3c7'
+                                    : '#dcfce7',
+                        color: row.balanceLabel === 'unbalanced' ? '#991b1b'
+                               : row.balanceLabel === 'moderate' ? '#92400e'
+                               : '#166534',
+                        padding: '0.375rem 0.625rem',
+                        borderRadius: '6px',
+                        fontWeight: '600',
+                        fontSize: '0.8125rem'
+                      }}>
+                        <span>
+                          {row.balanceLabel === 'unbalanced' ? '⚠️' 
+                           : row.balanceLabel === 'moderate' ? '◐' 
+                           : '✓'}
+                        </span>
+                        <span>{row.balanceStdev.toFixed(2)}</span>
+                      </div>
+                    ) : (
+                      <span style={{ color: '#9ca3af' }}>—</span>
+                    )}
+                  </td>
                 </tr>
               ))}
               {/* Portfolio average row */}
@@ -9374,6 +10241,28 @@ function HeatmapView({ customers, t }) {
                   }}>
                     {(Object.values(dimensionAvgs).reduce((a, b) => a + b, 0) / 5).toFixed(2)}
                   </div>
+                </td>
+                <td style={{ 
+                  padding: '0.5rem', 
+                  textAlign: 'center',
+                  background: '#fafafa',
+                  borderLeft: '1px solid #e5e7eb'
+                }}>
+                  {(() => {
+                    // Average σ across all rows
+                    const stdevs = heatmapRows.map(r => r.balanceStdev).filter(s => s !== null);
+                    if (stdevs.length === 0) return <span style={{ color: '#9ca3af' }}>—</span>;
+                    const avgStdev = stdevs.reduce((a, b) => a + b, 0) / stdevs.length;
+                    return (
+                      <div style={{
+                        color: '#6b7280',
+                        fontWeight: '600',
+                        fontSize: '0.875rem'
+                      }}>
+                        {avgStdev.toFixed(2)}
+                      </div>
+                    );
+                  })()}
                 </td>
               </tr>
             </tbody>
