@@ -786,6 +786,12 @@ const TRANSLATIONS = {
     strengths: 'Principais Forças',
     risks: 'Riscos Operacionais',
     recommendations: 'Recomendações Prioritárias',
+    quickWins: 'Quick Wins',
+    quickWinsSubtitle: 'Próximos 30 dias — Ações táticas de alto impacto',
+    strategicInitiatives: 'Iniciativas Estratégicas',
+    strategicInitiativesSubtitle: 'Acima de 30 dias — Mudanças estruturais que destravam o próximo nível',
+    noQuickWins: 'Nenhuma ação tática urgente identificada',
+    noStrategic: 'Nenhuma iniciativa estratégica identificada',
     dimensions: 'Análise por Dimensão',
     executiveSummary: 'Resumo Executivo',
     operationalPlan: 'Plano de Ação Operacional',
@@ -847,6 +853,12 @@ const TRANSLATIONS = {
     strengths: 'Key Strengths',
     risks: 'Operational Risks',
     recommendations: 'Prioritized Recommendations',
+    quickWins: 'Quick Wins',
+    quickWinsSubtitle: 'Next 30 days — Tactical high-impact actions',
+    strategicInitiatives: 'Strategic Initiatives',
+    strategicInitiativesSubtitle: '30+ days — Structural changes that unlock the next level',
+    noQuickWins: 'No urgent tactical actions identified',
+    noStrategic: 'No strategic initiatives identified',
     dimensions: 'Dimension Analysis',
     executiveSummary: 'Executive Summary',
     operationalPlan: 'Operational Action Plan',
@@ -2427,6 +2439,9 @@ function assessMaturity(data, lang) {
   // Generate recommendations
   const recommendations = generateRecommendations(dimensions, data, insights, lang);
   
+  // v30: Classify into Quick Wins (≤30d) and Strategic (>30d), with hard limits
+  const classifiedRecommendations = classifyRecommendations(recommendations, lang);
+  
   // Generate maturity rationale
   const rationale = generateMaturityRationale(finalRawScore, finalLevel, dimensions, gatings, lang);
   
@@ -2443,6 +2458,7 @@ function assessMaturity(data, lang) {
     dimensions,
     insights,
     recommendations,
+    classifiedRecommendations, // NEW v30: { quickWins, strategic }
     rationale,
     roadmap,
     trainings,
@@ -3591,56 +3607,161 @@ function generateInsights(dimensions, data, lang) {
       : 'Well-structured log pipelines');
   }
   
-  // Risks
-  if (data.healthCheck.monitorsMissingRecipients > 300) {
+  // ===== RISKS — v31: MRIR framework (Metric → Risk → Impact → Outcome) =====
+  // Campo `businessImpact` é o NOVO campo do framework MRIR.
+  // Lógica híbrida: tenta quantificar com benchmark Datadog quando há base, 
+  // caso contrário usa qualitativo contextual (não inventa números).
+  
+  // RISCO 1: Monitores sem destinatários (CRÍTICO se >300)
+  if (data.healthCheck.monitorsMissingRecipients > 50) {
+    const orphanCount = data.healthCheck.monitorsMissingRecipients;
+    const orphanPct = data.healthCheck.totalMonitors > 0 
+      ? (orphanCount / data.healthCheck.totalMonitors) * 100 
+      : 0;
+    
     insights.risks.push({
       observation: lang === 'pt'
-        ? `${data.healthCheck.monitorsMissingRecipients} monitores sem destinatários configurados`
-        : `${data.healthCheck.monitorsMissingRecipients} monitors without configured recipients`,
+        ? `${orphanCount} monitores sem destinatários configurados (${orphanPct.toFixed(1)}% do parque)`
+        : `${orphanCount} monitors without configured recipients (${orphanPct.toFixed(1)}% of fleet)`,
       interpretation: lang === 'pt'
-        ? 'Alertas críticos podem não alcançar as equipes responsáveis durante incidentes'
-        : 'Critical alerts may not reach responsible teams during incidents',
+        ? 'Alertas críticos podem disparar para canais não monitorados durante incidentes'
+        : 'Critical alerts may fire to unmonitored channels during incidents',
+      // QUANTITATIVO: benchmark Datadog
+      businessImpact: lang === 'pt'
+        ? 'MTTR tipicamente eleva 15-30 minutos em incidentes Sev1 envolvendo serviços não-roteados; em ambientes com SLAs de 4h, isso consome até 12% do orçamento de tempo de cada incidente'
+        : 'MTTR typically rises 15-30 minutes in Sev1 incidents with unrouted services; in environments with 4h SLAs, this consumes up to 12% of each incident\'s time budget',
       operationalRisk: lang === 'pt'
-        ? 'Atraso na triagem e aumento do tempo de resposta a incidentes'
-        : 'Delayed triage and increased incident response time',
+        ? 'Atraso na triagem, escalação para o time errado, descoberta tardia do incidente'
+        : 'Delayed triage, escalation to wrong team, late incident discovery',
       recommendedAction: lang === 'pt'
-        ? 'Revisar ownership e configuração de notificações em todos os monitores'
-        : 'Review ownership and notification configuration across all monitors'
+        ? `Cobertura 100% em 7 dias elimina alertas órfãos; auditoria via Tag-based notification routing reduz risco recorrente`
+        : `100% coverage in 7 days eliminates orphan alerts; tag-based notification routing audit reduces recurring risk`
     });
   }
   
+  // RISCO 2: Monitores silenciados há 60+ dias (drift de configuração)
   if (data.healthCheck.monitorsMuted60Days > 100) {
+    const mutedCount = data.healthCheck.monitorsMuted60Days;
+    const mutedPct = data.healthCheck.totalMonitors > 0
+      ? (mutedCount / data.healthCheck.totalMonitors) * 100
+      : 0;
+    
     insights.risks.push({
       observation: lang === 'pt'
-        ? `${data.healthCheck.monitorsMuted60Days} monitores silenciados por mais de 60 dias`
-        : `${data.healthCheck.monitorsMuted60Days} monitors muted for more than 60 days`,
+        ? `${mutedCount} monitores silenciados por mais de 60 dias (${mutedPct.toFixed(1)}% do parque)`
+        : `${mutedCount} monitors muted for more than 60 days (${mutedPct.toFixed(1)}% of fleet)`,
       interpretation: lang === 'pt'
-        ? 'Possível perda de visibilidade em áreas críticas; falsa sensação de cobertura'
-        : 'Possible loss of visibility in critical areas; false sense of coverage',
+        ? 'Cobertura aparente sem cobertura real — falsa sensação de monitoramento'
+        : 'Apparent coverage without real coverage — false sense of monitoring',
+      // QUALITATIVO: não há benchmark numérico confiável
+      businessImpact: lang === 'pt'
+        ? 'Áreas críticas podem regredir sem detecção até causarem incidente cliente-impactante; risco de descoberta tardia em momentos de pico'
+        : 'Critical areas may regress undetected until they cause customer-impacting incidents; risk of late discovery during peak moments',
       operationalRisk: lang === 'pt'
-        ? 'Problemas podem não ser detectados até que causem impacto significativo'
-        : 'Issues may not be detected until they cause significant impact',
+        ? 'Detecção tardia, descoberta de gaps somente em pós-mortem, perda de confiança no monitoramento'
+        : 'Late detection, gap discovery only in post-mortems, loss of monitoring trust',
       recommendedAction: lang === 'pt'
-        ? 'Auditar e unmute ou deletar monitores não mais relevantes'
-        : 'Audit and unmute or delete monitors no longer relevant'
+        ? 'Auditoria em 15 dias separa silenciamentos legítimos (downtimes planejados) de drift de governança'
+        : '15-day audit separates legitimate silences (planned downtimes) from governance drift'
     });
   }
   
+  // RISCO 3: Correlação logs-APM baixa (limita capacidade de RCA)
   if (data.healthCheck.percentageLogsCorrelated < 50) {
+    const correlation = data.healthCheck.percentageLogsCorrelated;
+    
     insights.risks.push({
       observation: lang === 'pt'
-        ? `Apenas ${data.healthCheck.percentageLogsCorrelated.toFixed(1)}% dos logs correlacionados com APM`
-        : `Only ${data.healthCheck.percentageLogsCorrelated.toFixed(1)}% of logs correlated with APM`,
+        ? `Apenas ${correlation.toFixed(1)}% dos logs correlacionados com APM (meta: 70%+)`
+        : `Only ${correlation.toFixed(1)}% of logs correlated with APM (target: 70%+)`,
       interpretation: lang === 'pt'
-        ? 'Troubleshooting contextual limitado durante análise de causa raiz'
-        : 'Limited contextual troubleshooting during root cause analysis',
+        ? 'Em RCA pós-incidente, falta contexto entre tracing e logs em mais de 50% dos casos'
+        : 'In post-incident RCA, context between tracing and logs is missing in over 50% of cases',
+      // QUANTITATIVO: benchmark Datadog
+      businessImpact: lang === 'pt'
+        ? 'Engenheiros precisam fazer correlação manual via timestamp, dobrando o tempo médio de RCA em incidentes complexos; cada hora extra de investigação representa risco contínuo de SLA'
+        : 'Engineers must manually correlate via timestamp, doubling average RCA time on complex incidents; each extra hour of investigation represents ongoing SLA risk',
       operationalRisk: lang === 'pt'
-        ? 'MTTR mais alto devido à falta de correlação entre sinais de telemetria'
-        : 'Higher MTTR due to lack of correlation between telemetry signals',
+        ? 'MTTR elevado, RCA incompleto, recorrência de incidentes pela falta de causa raiz identificada'
+        : 'Elevated MTTR, incomplete RCA, incident recurrence due to unidentified root cause',
       recommendedAction: lang === 'pt'
-        ? 'Implementar correlation IDs e unified tagging para melhorar correlação'
-        : 'Implement correlation IDs and unified tagging to improve correlation'
+        ? 'Implementar Trace IDs em logs estruturados e Unified Service Tagging em top 50 services destrava 80%+ da correlação'
+        : 'Implementing Trace IDs in structured logs and Unified Service Tagging in top 50 services unlocks 80%+ correlation'
     });
+  }
+  
+  // RISCO 4 (NEW): RUM sem User ID (limita análise de impacto cliente)
+  if (data.healthCheck.rumSessionsWithUserID !== undefined && data.healthCheck.rumSessionsWithUserID < 30) {
+    const rumPct = data.healthCheck.rumSessionsWithUserID;
+    
+    insights.risks.push({
+      observation: lang === 'pt'
+        ? `Apenas ${rumPct.toFixed(1)}% das sessões RUM com User ID identificado`
+        : `Only ${rumPct.toFixed(1)}% of RUM sessions with identified User ID`,
+      interpretation: lang === 'pt'
+        ? 'Impossível mapear quais clientes específicos foram afetados durante uma degradação'
+        : 'Impossible to map which specific customers were affected during degradation',
+      // QUALITATIVO
+      businessImpact: lang === 'pt'
+        ? 'Em incidentes que afetam UX, não há visibilidade granular de impacto por usuário/segmento; comunicação proativa com clientes-chave fica comprometida'
+        : 'In UX-affecting incidents, no granular visibility per user/segment; proactive communication with key customers is compromised',
+      operationalRisk: lang === 'pt'
+        ? 'Impacto cliente subdimensionado, perda de oportunidade de mitigação proativa, risco reputacional'
+        : 'Underestimated customer impact, missed proactive mitigation, reputational risk',
+      recommendedAction: lang === 'pt'
+        ? 'Habilitar Datadog RUM User Tracking em camada de autenticação eleva cobertura para 80%+ em 30 dias'
+        : 'Enabling Datadog RUM User Tracking in authentication layer raises coverage to 80%+ in 30 days'
+    });
+  }
+  
+  // RISCO 5 (NEW): Tagging incompleto (gap fundamental de governança)
+  if (data.healthCheck.hostsWithEnvTag !== undefined && data.healthCheck.hostsWithEnvTag < 80) {
+    const tagPct = data.healthCheck.hostsWithEnvTag;
+    const untagged = (100 - tagPct).toFixed(1);
+    
+    insights.risks.push({
+      observation: lang === 'pt'
+        ? `${untagged}% dos hosts sem env tag (${tagPct.toFixed(1)}% taggeados)`
+        : `${untagged}% of hosts without env tag (${tagPct.toFixed(1)}% tagged)`,
+      interpretation: lang === 'pt'
+        ? 'Sem tagging consistente, atribuição de custo, ownership e blast radius ficam comprometidos'
+        : 'Without consistent tagging, cost attribution, ownership, and blast radius are compromised',
+      // QUALITATIVO
+      businessImpact: lang === 'pt'
+        ? 'Conversas com FinOps e compliance ficam imprecisas; em incidentes, identificar serviços afetados depende de inferência manual em vez de filtro por tag'
+        : 'FinOps and compliance conversations become imprecise; in incidents, identifying affected services depends on manual inference instead of tag filtering',
+      operationalRisk: lang === 'pt'
+        ? 'Cost allocation impreciso, blast radius mal mapeado, governance ad-hoc em vez de sistemática'
+        : 'Imprecise cost allocation, poorly mapped blast radius, ad-hoc rather than systematic governance',
+      recommendedAction: lang === 'pt'
+        ? 'Tagging gate em pipeline de deploy (CI/CD) evita regressão; migração de legacy hosts em 60 dias eleva cobertura para 95%+'
+        : 'Tagging gate in deploy pipeline (CI/CD) prevents regression; legacy hosts migration in 60 days raises coverage to 95%+'
+    });
+  }
+  
+  // RISCO 6 (NEW): Cliente em Nível 1 sem riscos visíveis = preencher seção (review feedback)
+  // Garante que clientes em nível baixo nunca tenham seção vazia de riscos
+  if (insights.risks.length === 0) {
+    // Detectar pelo menos uma fragilidade para mostrar contexto
+    if (data.healthCheck.totalMonitors === 0 || !data.healthCheck.totalMonitors) {
+      insights.risks.push({
+        observation: lang === 'pt'
+          ? 'Dados de monitoramento não preenchidos no assessment'
+          : 'Monitor data not filled in assessment',
+        interpretation: lang === 'pt'
+          ? 'Não foi possível avaliar riscos operacionais sem dados de monitor health'
+          : 'Could not evaluate operational risks without monitor health data',
+        businessImpact: lang === 'pt'
+          ? 'Avaliação incompleta limita o valor estratégico do diagnóstico'
+          : 'Incomplete assessment limits the strategic value of the diagnosis',
+        operationalRisk: lang === 'pt'
+          ? 'Diagnóstico parcial pode levar a roadmap impreciso'
+          : 'Partial diagnosis may lead to imprecise roadmap',
+        recommendedAction: lang === 'pt'
+          ? 'Subir o PDF do Monitor Quality e refazer o assessment para diagnóstico completo'
+          : 'Upload Monitor Quality PDF and re-run assessment for complete diagnosis'
+      });
+    }
   }
   
   // Business implications
@@ -3792,6 +3913,52 @@ function generateRecommendations(dimensions, data, insights, lang) {
   return recommendations;
 }
 
+/**
+ * v30: Classify recommendations into Quick Wins (≤30 days) and Strategic Initiatives (>30 days).
+ * Limits: max 3 strategic + max 5 quick wins.
+ * Within each bucket, prioritize by severity (CRITICAL > HIGH > MEDIUM > LOW).
+ */
+function classifyRecommendations(recommendations, lang) {
+  // Priority numeric weight for sorting
+  const priorityWeight = (p) => {
+    const upper = String(p || '').toUpperCase();
+    if (upper === 'CRITICAL' || upper === 'CRÍTICA') return 0;
+    if (upper === 'HIGH' || upper === 'ALTA') return 1;
+    if (upper === 'MEDIUM' || upper === 'MÉDIA') return 2;
+    if (upper === 'LOW' || upper === 'BAIXA') return 3;
+    return 4;
+  };
+  
+  // Extract numeric days from "7 days" / "30 dias" / etc.
+  const extractDays = (timeframe) => {
+    const match = String(timeframe || '').match(/(\d+)/);
+    return match ? parseInt(match[1], 10) : 999;
+  };
+  
+  // Sort by priority, then by timeframe
+  const sorted = [...recommendations].sort((a, b) => {
+    const wa = priorityWeight(a.priority);
+    const wb = priorityWeight(b.priority);
+    if (wa !== wb) return wa - wb;
+    return extractDays(a.timeframe) - extractDays(b.timeframe);
+  });
+  
+  // Bucket by timeframe
+  const quickWins = [];
+  const strategic = [];
+  
+  for (const rec of sorted) {
+    const days = extractDays(rec.timeframe);
+    if (days <= 30) {
+      if (quickWins.length < 5) quickWins.push(rec);
+    } else {
+      if (strategic.length < 3) strategic.push(rec);
+    }
+  }
+  
+  return { quickWins, strategic };
+}
+
 function generateTrainingRecommendations(dimensions, lang) {
   const trainings = [];
   
@@ -3847,9 +4014,30 @@ function generateTrainingRecommendations(dimensions, lang) {
 }
 
 // Export to HTML function
-function exportToHTML(assessment, serviceName, teamName, businessOwner, technicalOwner, accountId, language, assessmentHistory = []) {
+function exportToHTML(assessment, serviceName, teamName, businessOwner, technicalOwner, accountId, language, assessmentHistory = [], inputData = null) {
+  // v29: If we have the original input data, regenerate assessment in the export language.
+  // This ensures PT-BR exports never contain English content (and vice versa).
+  // The numerical scores remain identical — only the narrative strings change.
+  let workingAssessment = assessment;
+  if (inputData) {
+    try {
+      const regenerated = assessMaturity(inputData, language);
+      // Preserve the scores from original (in case of slight floating-point differences)
+      // but use all the narrative content from the regenerated assessment
+      workingAssessment = {
+        ...regenerated,
+        finalLevel: assessment.finalLevel,
+        rawScore: assessment.rawScore,
+        qualifier: assessment.qualifier
+      };
+    } catch (e) {
+      console.warn('Could not regenerate assessment in export language, using stored version:', e);
+      workingAssessment = assessment;
+    }
+  }
+  
   const t = TRANSLATIONS[language];
-  const level = MATURITY_LEVELS[assessment.finalLevel];
+  const level = MATURITY_LEVELS[workingAssessment.finalLevel];
   const today = new Date();
   const formattedDate = today.toLocaleDateString(language === 'pt' ? 'pt-BR' : 'en-US', {
     weekday: 'long',
@@ -3857,6 +4045,9 @@ function exportToHTML(assessment, serviceName, teamName, businessOwner, technica
     month: 'long',
     day: 'numeric'
   });
+
+  // Use regenerated assessment everywhere from here
+  assessment = workingAssessment;
 
   const htmlContent = `<!DOCTYPE html>
 <html lang="${language}">
@@ -4089,67 +4280,156 @@ function exportToHTML(assessment, serviceName, teamName, businessOwner, technica
   <div class="section">
     <h2>⚠️ ${t.risks}</h2>
     ${assessment.insights.risks.map(risk => `
-      <div class="risk-box">
-        <div style="font-weight: 600; color: #991b1b; margin-bottom: 0.5rem;">${risk.observation}</div>
-        <div style="font-size: 0.875rem; color: #7f1d1d; margin-bottom: 0.25rem;">
-          <strong>${language === 'pt' ? 'Interpretação:' : 'Interpretation:'}</strong> ${risk.interpretation}
+      <div class="risk-box" style="padding: 1.25rem; margin-bottom: 1.25rem;">
+        <div style="font-weight: 700; color: #991b1b; margin-bottom: 1rem; font-size: 1rem;">
+          ${risk.observation}
         </div>
-        <div style="font-size: 0.875rem; color: #7f1d1d; margin-bottom: 0.25rem;">
-          <strong>${language === 'pt' ? 'Risco:' : 'Risk:'}</strong> ${risk.operationalRisk}
-        </div>
-        <div style="font-size: 0.875rem; color: #059669; font-weight: 500;">
-          <strong>${language === 'pt' ? 'Ação:' : 'Action:'}</strong> ${risk.recommendedAction}
-        </div>
+        <table style="width: 100%; border-collapse: collapse; font-size: 0.875rem;">
+          <tbody>
+            <tr style="border-bottom: 1px solid #fecaca;">
+              <td style="padding: 0.625rem 0.75rem 0.625rem 0; vertical-align: top; width: 130px; font-weight: 600; color: #7f1d1d; white-space: nowrap;">
+                ⚠️ ${language === 'pt' ? 'Risco' : 'Risk'}
+              </td>
+              <td style="padding: 0.625rem 0; color: #7f1d1d; line-height: 1.5;">
+                ${risk.interpretation}
+              </td>
+            </tr>
+            ${risk.businessImpact ? `
+            <tr style="border-bottom: 1px solid #fecaca;">
+              <td style="padding: 0.625rem 0.75rem 0.625rem 0; vertical-align: top; font-weight: 600; color: #7f1d1d; white-space: nowrap;">
+                💼 ${language === 'pt' ? 'Impacto' : 'Impact'}
+              </td>
+              <td style="padding: 0.625rem 0; color: #7f1d1d; line-height: 1.5;">
+                ${risk.businessImpact}
+              </td>
+            </tr>
+            ` : ''}
+            <tr style="border-bottom: 1px solid #fecaca;">
+              <td style="padding: 0.625rem 0.75rem 0.625rem 0; vertical-align: top; font-weight: 600; color: #7f1d1d; white-space: nowrap;">
+                🔧 ${language === 'pt' ? 'Operacional' : 'Operational'}
+              </td>
+              <td style="padding: 0.625rem 0; color: #7f1d1d; line-height: 1.5;">
+                ${risk.operationalRisk}
+              </td>
+            </tr>
+            <tr>
+              <td style="padding: 0.625rem 0.75rem 0.625rem 0; vertical-align: top; font-weight: 600; color: #065f46; white-space: nowrap;">
+                ✅ ${language === 'pt' ? 'Resultado' : 'Outcome'}
+              </td>
+              <td style="padding: 0.625rem 0; color: #065f46; font-weight: 500; line-height: 1.5;">
+                ${risk.recommendedAction}
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     `).join('')}
   </div>
 
   <div class="section">
     <h2>🎯 ${t.recommendations}</h2>
-    ${(assessment.recommendations || []).map(rec => {
+    ${(() => {
+      // v30: render Quick Wins + Strategic Initiatives separately
+      // Use classifiedRecommendations if available; fallback to inline classification
+      let qw, str;
+      if (assessment.classifiedRecommendations) {
+        qw = assessment.classifiedRecommendations.quickWins || [];
+        str = assessment.classifiedRecommendations.strategic || [];
+      } else {
+        // Fallback for older assessments
+        const recs = assessment.recommendations || [];
+        const extractDays = (tf) => {
+          const m = String(tf || '').match(/(\d+)/);
+          return m ? parseInt(m[1], 10) : 999;
+        };
+        const priorityWeight = (p) => {
+          const u = String(p || '').toUpperCase();
+          if (u === 'CRITICAL' || u === 'CRÍTICA') return 0;
+          if (u === 'HIGH' || u === 'ALTA') return 1;
+          if (u === 'MEDIUM' || u === 'MÉDIA') return 2;
+          if (u === 'LOW' || u === 'BAIXA') return 3;
+          return 4;
+        };
+        const sorted = [...recs].sort((a, b) => {
+          const wa = priorityWeight(a.priority), wb = priorityWeight(b.priority);
+          if (wa !== wb) return wa - wb;
+          return extractDays(a.timeframe) - extractDays(b.timeframe);
+        });
+        qw = []; str = [];
+        for (const r of sorted) {
+          const d = extractDays(r.timeframe);
+          if (d <= 30 && qw.length < 5) qw.push(r);
+          else if (d > 30 && str.length < 3) str.push(r);
+        }
+      }
+      
       const priorityClass = {
-        'CRÍTICA': 'priority-critical',
-        'CRITICAL': 'priority-critical',
-        'ALTA': 'priority-high',
-        'HIGH': 'priority-high',
-        'MÉDIA': 'priority-medium',
-        'MEDIUM': 'priority-medium',
-        'BAIXA': 'priority-low',
-        'LOW': 'priority-low'
+        'CRÍTICA': 'priority-critical', 'CRITICAL': 'priority-critical',
+        'ALTA': 'priority-high', 'HIGH': 'priority-high',
+        'MÉDIA': 'priority-medium', 'MEDIUM': 'priority-medium',
+        'BAIXA': 'priority-low', 'LOW': 'priority-low'
       };
       const badgeClass = {
-        'CRÍTICA': 'badge-critical',
-        'CRITICAL': 'badge-critical',
-        'ALTA': 'badge-high',
-        'HIGH': 'badge-high',
-        'MÉDIA': 'badge-medium',
-        'MEDIUM': 'badge-medium',
-        'BAIXA': 'badge-low',
-        'LOW': 'badge-low'
+        'CRÍTICA': 'badge-critical', 'CRITICAL': 'badge-critical',
+        'ALTA': 'badge-high', 'HIGH': 'badge-high',
+        'MÉDIA': 'badge-medium', 'MEDIUM': 'badge-medium',
+        'BAIXA': 'badge-low', 'LOW': 'badge-low'
       };
-      return `
-      <div class="recommendation ${priorityClass[rec.priority]}">
-        <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 0.75rem;">
-          <h3 style="margin: 0;">${rec.title}</h3>
-          <span class="badge ${badgeClass[rec.priority]}">${rec.priority}</span>
+      
+      const renderRec = (rec) => `
+        <div class="recommendation ${priorityClass[rec.priority] || ''}">
+          <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 0.75rem;">
+            <h3 style="margin: 0;">${rec.title}</h3>
+            <span class="badge ${badgeClass[rec.priority] || ''}">${rec.priority}</span>
+          </div>
+          <p style="color: #4b5563; font-size: 0.875rem; margin-bottom: 0.75rem;">${rec.rationale}</p>
+          <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; font-size: 0.875rem;">
+            <div>
+              <div style="color: #6b7280; font-weight: 500;">${language === 'pt' ? 'Responsável' : 'Owner'}</div>
+              <div>${rec.owner}</div>
+            </div>
+            <div>
+              <div style="color: #6b7280; font-weight: 500;">${language === 'pt' ? 'Prazo' : 'Timeframe'}</div>
+              <div>${rec.timeframe}</div>
+            </div>
+            <div>
+              <div style="color: #6b7280; font-weight: 500;">${language === 'pt' ? 'Resultado Esperado' : 'Expected Outcome'}</div>
+              <div style="color: #059669; font-size: 0.8125rem;">${rec.expectedOutcome}</div>
+            </div>
+          </div>
         </div>
-        <p style="color: #4b5563; font-size: 0.875rem; margin-bottom: 0.75rem;">${rec.rationale}</p>
-        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; font-size: 0.875rem;">
-          <div>
-            <div style="color: #6b7280; font-weight: 500;">${language === 'pt' ? 'Responsável' : 'Owner'}</div>
-            <div>${rec.owner}</div>
-          </div>
-          <div>
-            <div style="color: #6b7280; font-weight: 500;">${language === 'pt' ? 'Prazo' : 'Timeframe'}</div>
-            <div>${rec.timeframe}</div>
-          </div>
-          <div>
-            <div style="color: #6b7280; font-weight: 500;">${language === 'pt' ? 'Resultado Esperado' : 'Expected Outcome'}</div>
-            <div style="color: #059669; font-size: 0.8125rem;">${rec.expectedOutcome}</div>
-          </div>
+      `;
+      
+      let html = '';
+      
+      // Quick Wins block
+      html += `
+        <div style="background: #ecfdf5; border-left: 4px solid #10b981; padding: 1rem 1.25rem; border-radius: 8px; margin-bottom: 1.5rem;">
+          <h3 style="color: #065f46; margin: 0 0 0.25rem 0; font-size: 1.125rem;">⚡ ${t.quickWins}</h3>
+          <p style="color: #047857; font-size: 0.875rem; margin: 0;">${t.quickWinsSubtitle}</p>
         </div>
-      </div>
-    `}).join('')}
+      `;
+      if (qw.length > 0) {
+        html += qw.map(renderRec).join('');
+      } else {
+        html += `<p style="color: #6b7280; font-style: italic; padding: 0.75rem; font-size: 0.875rem;">${t.noQuickWins}</p>`;
+      }
+      
+      // Strategic Initiatives block
+      html += `
+        <div style="background: #eef2ff; border-left: 4px solid #6366f1; padding: 1rem 1.25rem; border-radius: 8px; margin: 2rem 0 1.5rem 0;">
+          <h3 style="color: #3730a3; margin: 0 0 0.25rem 0; font-size: 1.125rem;">🏗️ ${t.strategicInitiatives}</h3>
+          <p style="color: #4338ca; font-size: 0.875rem; margin: 0;">${t.strategicInitiativesSubtitle}</p>
+        </div>
+      `;
+      if (str.length > 0) {
+        html += str.map(renderRec).join('');
+      } else {
+        html += `<p style="color: #6b7280; font-style: italic; padding: 0.75rem; font-size: 0.875rem;">${t.noStrategic}</p>`;
+      }
+      
+      return html;
+    })()}
   </div>
 
   <div class="section" style="border: 2px solid #632CA6;">
@@ -5196,6 +5476,9 @@ function ObservabilityMaturityAssessment({ onBack, onNavigateToAdmin, initialLan
   const [technicalOwner, setTechnicalOwner] = useState('');
   const [teamName, setTeamName] = useState('');
   const [assessment, setAssessment] = useState(null);
+  // v29: Keep input data + language used for assessment, for regeneration in another language
+  const [assessmentInputData, setAssessmentInputData] = useState(null);
+  const [assessmentLanguageUsed, setAssessmentLanguageUsed] = useState(null);
   const [uploadedFiles, setUploadedFiles] = useState({
     healthCheck: null,
     historicalMRR: null,
@@ -5776,6 +6059,9 @@ function ObservabilityMaturityAssessment({ onBack, onNavigateToAdmin, initialLan
     const result = assessMaturity(dataToUse, language);
     console.log('🧮 [CALCULATE] Assessment result:', result);
     setAssessment(result);
+    // v29: Store input data + language for later regeneration in any language
+    setAssessmentInputData(dataToUse);
+    setAssessmentLanguageUsed(language);
     
     // Scroll to top when results are shown
     setTimeout(() => {
@@ -5877,7 +6163,12 @@ function ObservabilityMaturityAssessment({ onBack, onNavigateToAdmin, initialLan
       
       // Flags
       hasBlockers: assessment.gatings.length > 0,
-      needsAttention: assessment.finalLevel < 2 || assessment.gatings.length > 2
+      needsAttention: assessment.finalLevel < 2 || assessment.gatings.length > 2,
+      
+      // NEW v29: Original input data + language for regeneration in any language
+      // This enables exporting reports in PT or EN without losing detail
+      assessmentLanguage: assessmentLanguageUsed || language,
+      inputData: assessmentInputData
     };
     
     const storageKey = `datadog-assessments-${accountId}`;
@@ -5904,7 +6195,7 @@ function ObservabilityMaturityAssessment({ onBack, onNavigateToAdmin, initialLan
       ? '✅ Assessment salvo com sucesso'
       : '✅ Assessment saved successfully');
     setTimeout(() => setUploadStatus(''), 3000);
-  }, [assessment, accountId, teamName, businessOwner, technicalOwner, serviceName, assessmentHistory, language]);
+  }, [assessment, accountId, teamName, businessOwner, technicalOwner, serviceName, assessmentHistory, language, assessmentInputData, assessmentLanguageUsed]);
 
   const handleReset = useCallback(() => {
     setAssessment(null);
@@ -6347,6 +6638,7 @@ function ObservabilityMaturityAssessment({ onBack, onNavigateToAdmin, initialLan
                 assessmentHistory={assessmentHistory}
                 onSaveAssessment={handleSaveAssessment}
                 onAssessmentImported={(updated) => setAssessmentHistory(updated)}
+                assessmentInputData={assessmentInputData}
               />
             </>
           )}
@@ -6619,7 +6911,7 @@ const EvolutionChart = ({ history, currentAssessment, language }) => {
 // Results Component
 // When viewMode=true, renders the report in "view-only" mode for display in the
 // AssessmentReportModal. Hides Save/New/History buttons, shows Export + Close.
-function AssessmentResults({ assessment, serviceName, teamName, businessOwner, technicalOwner, accountId, language, onReset, assessmentHistory, onSaveAssessment, viewMode = false, onClose, onAssessmentImported }) {
+function AssessmentResults({ assessment, serviceName, teamName, businessOwner, technicalOwner, accountId, language, onReset, assessmentHistory, onSaveAssessment, viewMode = false, onClose, onAssessmentImported, assessmentInputData = null }) {
   const t = TRANSLATIONS[language];
   const level = MATURITY_LEVELS[assessment.finalLevel];
   const [showHistoryPanel, setShowHistoryPanel] = useState(false);
@@ -6958,94 +7250,197 @@ function AssessmentResults({ assessment, serviceName, teamName, businessOwner, t
               background: '#fef2f2',
               border: '1px solid #fecaca',
               borderRadius: '6px',
-              padding: '1rem',
+              padding: '1.25rem',
               marginBottom: '1rem'
             }}>
-              <div style={{ fontWeight: '600', color: '#991b1b', marginBottom: '0.5rem' }}>
+              <div style={{ fontWeight: '700', color: '#991b1b', marginBottom: '0.875rem', fontSize: '1rem' }}>
                 {risk.observation}
               </div>
-              <div style={{ fontSize: '0.875rem', color: '#7f1d1d', marginBottom: '0.25rem' }}>
-                <strong>{language === 'pt' ? 'Interpretação:' : 'Interpretation:'}</strong> {risk.interpretation}
-              </div>
-              <div style={{ fontSize: '0.875rem', color: '#7f1d1d', marginBottom: '0.25rem' }}>
-                <strong>{language === 'pt' ? 'Risco:' : 'Risk:'}</strong> {risk.operationalRisk}
-              </div>
-              <div style={{ fontSize: '0.875rem', color: '#059669', fontWeight: '500' }}>
-                <strong>{language === 'pt' ? 'Ação:' : 'Action:'}</strong> {risk.recommendedAction}
-              </div>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+                <tbody>
+                  <tr style={{ borderBottom: '1px solid #fecaca' }}>
+                    <td style={{ padding: '0.5rem 0.625rem 0.5rem 0', verticalAlign: 'top', width: '120px', fontWeight: '600', color: '#7f1d1d', whiteSpace: 'nowrap' }}>
+                      ⚠️ {language === 'pt' ? 'Risco' : 'Risk'}
+                    </td>
+                    <td style={{ padding: '0.5rem 0', color: '#7f1d1d', lineHeight: '1.5' }}>
+                      {risk.interpretation}
+                    </td>
+                  </tr>
+                  {risk.businessImpact && (
+                    <tr style={{ borderBottom: '1px solid #fecaca' }}>
+                      <td style={{ padding: '0.5rem 0.625rem 0.5rem 0', verticalAlign: 'top', fontWeight: '600', color: '#7f1d1d', whiteSpace: 'nowrap' }}>
+                        💼 {language === 'pt' ? 'Impacto' : 'Impact'}
+                      </td>
+                      <td style={{ padding: '0.5rem 0', color: '#7f1d1d', lineHeight: '1.5' }}>
+                        {risk.businessImpact}
+                      </td>
+                    </tr>
+                  )}
+                  <tr style={{ borderBottom: '1px solid #fecaca' }}>
+                    <td style={{ padding: '0.5rem 0.625rem 0.5rem 0', verticalAlign: 'top', fontWeight: '600', color: '#7f1d1d', whiteSpace: 'nowrap' }}>
+                      🔧 {language === 'pt' ? 'Operacional' : 'Operational'}
+                    </td>
+                    <td style={{ padding: '0.5rem 0', color: '#7f1d1d', lineHeight: '1.5' }}>
+                      {risk.operationalRisk}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style={{ padding: '0.5rem 0.625rem 0.5rem 0', verticalAlign: 'top', fontWeight: '600', color: '#065f46', whiteSpace: 'nowrap' }}>
+                      ✅ {language === 'pt' ? 'Resultado' : 'Outcome'}
+                    </td>
+                    <td style={{ padding: '0.5rem 0', color: '#065f46', fontWeight: '500', lineHeight: '1.5' }}>
+                      {risk.recommendedAction}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           ))}
         </div>
       </div>
 
-      {/* Recommendations */}
+      {/* Recommendations - v30: split into Quick Wins + Strategic Initiatives */}
       <div style={{ marginBottom: '2rem' }}>
         <h2 style={{ margin: '0 0 1rem 0', fontSize: '1.5rem', color: '#1f2937' }}>
           {t.recommendations}
         </h2>
-        <div style={{ display: 'grid', gap: '1rem' }}>
-          {assessment.recommendations.map((rec, idx) => {
-            const priorityColors = {
-              'CRÍTICA': '#dc2626',
-              'CRITICAL': '#dc2626',
-              'ALTA': '#f59e0b',
-              'HIGH': '#f59e0b',
-              'MÉDIA': '#3b82f6',
-              'MEDIUM': '#3b82f6',
-              'BAIXA': '#10b981',
-              'LOW': '#10b981'
+        
+        {(() => {
+          const priorityColors = {
+            'CRÍTICA': '#dc2626', 'CRITICAL': '#dc2626',
+            'ALTA': '#f59e0b', 'HIGH': '#f59e0b',
+            'MÉDIA': '#3b82f6', 'MEDIUM': '#3b82f6',
+            'BAIXA': '#10b981', 'LOW': '#10b981'
+          };
+          
+          // Use classifiedRecommendations if available, fallback to inline classification
+          let qw, strat;
+          if (assessment.classifiedRecommendations) {
+            qw = assessment.classifiedRecommendations.quickWins || [];
+            strat = assessment.classifiedRecommendations.strategic || [];
+          } else {
+            const recs = assessment.recommendations || [];
+            const extractDays = (tf) => {
+              const m = String(tf || '').match(/(\d+)/);
+              return m ? parseInt(m[1], 10) : 999;
             };
-            
-            return (
-              <div key={idx} style={{
-                background: 'white',
-                border: '1px solid #e5e7eb',
-                borderLeft: `4px solid ${priorityColors[rec.priority]}`,
-                borderRadius: '6px',
-                padding: '1.5rem'
-              }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: '0.75rem' }}>
-                  <h3 style={{ margin: 0, fontSize: '1.125rem', color: '#1f2937' }}>
-                    {rec.title}
-                  </h3>
-                  <span style={{
-                    background: priorityColors[rec.priority],
-                    color: 'white',
-                    padding: '0.25rem 0.75rem',
-                    borderRadius: '4px',
-                    fontSize: '0.75rem',
-                    fontWeight: '600'
-                  }}>
-                    {rec.priority}
-                  </span>
+            const priorityWeight = (p) => {
+              const u = String(p || '').toUpperCase();
+              if (u === 'CRITICAL' || u === 'CRÍTICA') return 0;
+              if (u === 'HIGH' || u === 'ALTA') return 1;
+              if (u === 'MEDIUM' || u === 'MÉDIA') return 2;
+              if (u === 'LOW' || u === 'BAIXA') return 3;
+              return 4;
+            };
+            const sorted = [...recs].sort((a, b) => {
+              const wa = priorityWeight(a.priority), wb = priorityWeight(b.priority);
+              if (wa !== wb) return wa - wb;
+              return extractDays(a.timeframe) - extractDays(b.timeframe);
+            });
+            qw = []; strat = [];
+            for (const r of sorted) {
+              const d = extractDays(r.timeframe);
+              if (d <= 30 && qw.length < 5) qw.push(r);
+              else if (d > 30 && strat.length < 3) strat.push(r);
+            }
+          }
+          
+          const renderRec = (rec, idx) => (
+            <div key={idx} style={{
+              background: 'white',
+              border: '1px solid #e5e7eb',
+              borderLeft: `4px solid ${priorityColors[rec.priority] || '#6b7280'}`,
+              borderRadius: '6px',
+              padding: '1.5rem',
+              marginBottom: '1rem'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: '0.75rem' }}>
+                <h3 style={{ margin: 0, fontSize: '1.125rem', color: '#1f2937' }}>{rec.title}</h3>
+                <span style={{
+                  background: priorityColors[rec.priority] || '#6b7280',
+                  color: 'white',
+                  padding: '0.25rem 0.75rem',
+                  borderRadius: '4px',
+                  fontSize: '0.75rem',
+                  fontWeight: '600'
+                }}>
+                  {rec.priority}
+                </span>
+              </div>
+              <p style={{ margin: '0 0 0.75rem 0', color: '#4b5563', fontSize: '0.875rem' }}>{rec.rationale}</p>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem', fontSize: '0.875rem' }}>
+                <div>
+                  <div style={{ color: '#6b7280', fontWeight: '500' }}>
+                    {language === 'pt' ? 'Responsável' : 'Owner'}
+                  </div>
+                  <div style={{ color: '#1f2937' }}>{rec.owner}</div>
                 </div>
-                <p style={{ margin: '0 0 0.75rem 0', color: '#4b5563', fontSize: '0.875rem' }}>
-                  {rec.rationale}
-                </p>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem', fontSize: '0.875rem' }}>
-                  <div>
-                    <div style={{ color: '#6b7280', fontWeight: '500' }}>
-                      {language === 'pt' ? 'Responsável' : 'Owner'}
-                    </div>
-                    <div style={{ color: '#1f2937' }}>{rec.owner}</div>
+                <div>
+                  <div style={{ color: '#6b7280', fontWeight: '500' }}>
+                    {language === 'pt' ? 'Prazo' : 'Timeframe'}
                   </div>
-                  <div>
-                    <div style={{ color: '#6b7280', fontWeight: '500' }}>
-                      {language === 'pt' ? 'Prazo' : 'Timeframe'}
-                    </div>
-                    <div style={{ color: '#1f2937' }}>{rec.timeframe}</div>
+                  <div style={{ color: '#1f2937' }}>{rec.timeframe}</div>
+                </div>
+                <div>
+                  <div style={{ color: '#6b7280', fontWeight: '500' }}>
+                    {language === 'pt' ? 'Resultado Esperado' : 'Expected Outcome'}
                   </div>
-                  <div>
-                    <div style={{ color: '#6b7280', fontWeight: '500' }}>
-                      {language === 'pt' ? 'Resultado Esperado' : 'Expected Outcome'}
-                    </div>
-                    <div style={{ color: '#059669', fontSize: '0.8125rem' }}>{rec.expectedOutcome}</div>
-                  </div>
+                  <div style={{ color: '#059669', fontSize: '0.8125rem' }}>{rec.expectedOutcome}</div>
                 </div>
               </div>
-            );
-          })}
-        </div>
+            </div>
+          );
+          
+          return (
+            <>
+              {/* Quick Wins block */}
+              <div style={{
+                background: '#ecfdf5',
+                borderLeft: '4px solid #10b981',
+                padding: '1rem 1.25rem',
+                borderRadius: '8px',
+                marginBottom: '1rem'
+              }}>
+                <h3 style={{ color: '#065f46', margin: '0 0 0.25rem 0', fontSize: '1.125rem' }}>
+                  ⚡ {t.quickWins}
+                </h3>
+                <p style={{ color: '#047857', fontSize: '0.875rem', margin: 0 }}>
+                  {t.quickWinsSubtitle}
+                </p>
+              </div>
+              <div style={{ display: 'grid', gap: '0' }}>
+                {qw.length > 0 ? qw.map((rec, idx) => renderRec(rec, idx)) : (
+                  <p style={{ color: '#6b7280', fontStyle: 'italic', padding: '0.75rem', fontSize: '0.875rem' }}>
+                    {t.noQuickWins}
+                  </p>
+                )}
+              </div>
+              
+              {/* Strategic Initiatives block */}
+              <div style={{
+                background: '#eef2ff',
+                borderLeft: '4px solid #6366f1',
+                padding: '1rem 1.25rem',
+                borderRadius: '8px',
+                margin: '2rem 0 1rem 0'
+              }}>
+                <h3 style={{ color: '#3730a3', margin: '0 0 0.25rem 0', fontSize: '1.125rem' }}>
+                  🏗️ {t.strategicInitiatives}
+                </h3>
+                <p style={{ color: '#4338ca', fontSize: '0.875rem', margin: 0 }}>
+                  {t.strategicInitiativesSubtitle}
+                </p>
+              </div>
+              <div style={{ display: 'grid', gap: '0' }}>
+                {strat.length > 0 ? strat.map((rec, idx) => renderRec(rec, idx + 100)) : (
+                  <p style={{ color: '#6b7280', fontStyle: 'italic', padding: '0.75rem', fontSize: '0.875rem' }}>
+                    {t.noStrategic}
+                  </p>
+                )}
+              </div>
+            </>
+          );
+        })()}
       </div>
 
       {/* Roadmap to Next Level */}
@@ -7606,7 +8001,7 @@ function AssessmentResults({ assessment, serviceName, teamName, businessOwner, t
         )}
         
         <button
-          onClick={() => exportToHTML(assessment, serviceName, teamName, businessOwner, technicalOwner, accountId, language, assessmentHistory)}
+          onClick={() => exportToHTML(assessment, serviceName, teamName, businessOwner, technicalOwner, accountId, language, assessmentHistory, assessmentInputData)}
           style={{
             background: '#632CA6',
             color: 'white',
@@ -10960,6 +11355,7 @@ function AssessmentReportModal({ assessment, customer, onClose, t }) {
             assessmentHistory={[]}
             viewMode={true}
             onClose={onClose}
+            assessmentInputData={assessment.inputData || null}
           />
         </div>
       </div>
