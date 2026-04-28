@@ -2406,7 +2406,7 @@ const PDF_DATA = {
 };
 
 // Scoring Engine
-function assessMaturity(data, lang) {
+function assessMaturity(data, lang, customerName = null) {
   // 1. Platform Adoption
   const adoption = assessPlatformAdoption(data, lang);
   
@@ -2445,6 +2445,9 @@ function assessMaturity(data, lang) {
   // Generate maturity rationale
   const rationale = generateMaturityRationale(finalRawScore, finalLevel, dimensions, gatings, lang);
   
+  // v32: Generate executive summary (Principal CSM tone, 3 paragraphs)
+  const executiveSummary = generateExecutiveSummary(data, dimensions, finalLevel, finalRawScore, customerName, lang);
+  
   // Generate roadmap to next level
   const roadmap = generateRoadmapToNextLevel(finalLevel, dimensions, data, lang);
   
@@ -2460,6 +2463,7 @@ function assessMaturity(data, lang) {
     recommendations,
     classifiedRecommendations, // NEW v30: { quickWins, strategic }
     rationale,
+    executiveSummary, // NEW v32: { paragraphs[], profile }
     roadmap,
     trainings,
     rawScore: finalRawScore
@@ -2530,6 +2534,264 @@ function generateMaturityRationale(rawScore, finalLevel, dimensions, gatings, la
     increased,
     prevented,
     appliedCaps
+  };
+}
+
+/**
+ * v32: Generate an Executive Summary (Principal CSM tone)
+ * 3-4 paragraphs, customized per customer:
+ *   1. Positioning: where the customer stands (level + profile based on σ + dim mix)
+ *   2. Scale + investment context with main gaps
+ *   3. Path forward (direct/cirurgical/structural based on profile)
+ * 
+ * Uses real data only — no invented numbers.
+ * Adapts tone to maturity level (rescue / evolution / excellence).
+ */
+function generateExecutiveSummary(data, dimensions, finalLevel, rawScore, customerName, lang) {
+  const isPt = lang === 'pt';
+  
+  // Helper: format number with locale
+  const fmtNum = (n) => {
+    if (typeof n !== 'number' || isNaN(n)) return '—';
+    return n.toLocaleString(isPt ? 'pt-BR' : 'en-US');
+  };
+  
+  // Helper: format currency
+  const fmtCurrency = (n) => {
+    if (typeof n !== 'number' || isNaN(n)) return '—';
+    return '$' + n.toLocaleString(isPt ? 'pt-BR' : 'en-US', { maximumFractionDigits: 0 });
+  };
+  
+  // === Calculate profile signals ===
+  const dimScores = [
+    dimensions.adoption.score,
+    dimensions.governance.score,
+    dimensions.quality.score,
+    dimensions.alerting.score,
+    dimensions.cost.score
+  ];
+  const validScores = dimScores.filter(s => typeof s === 'number' && !isNaN(s));
+  const avgScore = validScores.length > 0 ? validScores.reduce((a, b) => a + b, 0) / validScores.length : rawScore;
+  const variance = validScores.reduce((sum, s) => sum + Math.pow(s - avgScore, 2), 0) / validScores.length;
+  const stdev = Math.sqrt(variance);
+  const isUnbalanced = stdev >= 1.2;
+  const isBalanced = stdev < 0.6;
+  
+  // Identify strongest and weakest dimensions
+  const dimLabels = isPt
+    ? { adoption: 'adoção', governance: 'governança', quality: 'qualidade de telemetria', alerting: 'confiabilidade de alertas', cost: 'governança de custo' }
+    : { adoption: 'adoption', governance: 'governance', quality: 'telemetry quality', alerting: 'alerting reliability', cost: 'cost governance' };
+  
+  const dimEntries = [
+    { key: 'adoption', score: dimensions.adoption.score, label: dimLabels.adoption },
+    { key: 'governance', score: dimensions.governance.score, label: dimLabels.governance },
+    { key: 'quality', score: dimensions.quality.score, label: dimLabels.quality },
+    { key: 'alerting', score: dimensions.alerting.score, label: dimLabels.alerting },
+    { key: 'cost', score: dimensions.cost.score, label: dimLabels.cost }
+  ].filter(d => typeof d.score === 'number' && !isNaN(d.score));
+  
+  const sortedDims = [...dimEntries].sort((a, b) => b.score - a.score);
+  const topDim = sortedDims[0];
+  const bottomDim = sortedDims[sortedDims.length - 1];
+  
+  // === Profile classification ===
+  let profileDescription;
+  if (isUnbalanced) {
+    if (topDim && bottomDim && (topDim.score - bottomDim.score) >= 2.5) {
+      profileDescription = isPt
+        ? `cliente de perfil contrastante: forte ${topDim.label} (${topDim.score.toFixed(1)}) ofuscada por ${bottomDim.label} crítica (${bottomDim.score.toFixed(1)})`
+        : `customer with contrasting profile: strong ${topDim.label} (${topDim.score.toFixed(1)}) overshadowed by critical ${bottomDim.label} (${bottomDim.score.toFixed(1)})`;
+    } else {
+      profileDescription = isPt
+        ? `cliente desbalanceado, com forças e fraquezas díspares entre dimensões`
+        : `unbalanced customer with disparate strengths and weaknesses across dimensions`;
+    }
+  } else if (isBalanced) {
+    if (avgScore >= 3.5) {
+      profileDescription = isPt
+        ? `cliente equilibrado de maturidade avançada, consistente em todas as dimensões`
+        : `balanced advanced-maturity customer, consistent across all dimensions`;
+    } else if (avgScore >= 2.5) {
+      profileDescription = isPt
+        ? `cliente equilibrado em jornada estruturada de evolução`
+        : `balanced customer in structured evolution journey`;
+    } else {
+      profileDescription = isPt
+        ? `cliente em estágio inicial, com desenvolvimento uniforme em todas as dimensões`
+        : `early-stage customer with uniform development across all dimensions`;
+    }
+  } else {
+    // Moderate
+    if (dimensions.adoption.score >= 3.5 && dimensions.governance.score < 3) {
+      profileDescription = isPt
+        ? `cliente de adoção ampla mas governança em transição`
+        : `broad-adoption customer in governance transition`;
+    } else if (dimensions.adoption.score < 2.5) {
+      profileDescription = isPt
+        ? `cliente em fase de expansão de uso da plataforma`
+        : `customer in platform usage expansion phase`;
+    } else {
+      profileDescription = isPt
+        ? `cliente em evolução constante de maturidade`
+        : `customer in steady maturity evolution`;
+    }
+  }
+  
+  // === Scale context ===
+  const totalHosts = (data.healthCheck.infraHostsAvg || 0);
+  const apmHosts = (data.healthCheck.apmHostsAvg || 0);
+  const productCount = (data.historicalMRR?.productCount || 0);
+  const monthlySpend = (data.historicalMRR?.avgMonthlySpend || 0);
+  const totalMonitors = (data.healthCheck.totalMonitors || 0);
+  
+  // Scale qualifier
+  let scaleQualifier;
+  if (totalHosts > 10000) {
+    scaleQualifier = isPt ? 'enterprise' : 'enterprise-scale';
+  } else if (totalHosts > 2000) {
+    scaleQualifier = isPt ? 'mid-market' : 'mid-market';
+  } else if (totalHosts > 500) {
+    scaleQualifier = isPt ? 'crescimento' : 'growth';
+  } else {
+    scaleQualifier = isPt ? 'inicial' : 'early-stage';
+  }
+  
+  // === Identify top 1-2 specific gaps from real data ===
+  const realGaps = [];
+  
+  if (data.healthCheck.percentageLogsCorrelated !== undefined && data.healthCheck.percentageLogsCorrelated < 60) {
+    realGaps.push(isPt
+      ? `correlação de telemetria (${data.healthCheck.percentageLogsCorrelated.toFixed(0)}% logs-APM)`
+      : `telemetry correlation (${data.healthCheck.percentageLogsCorrelated.toFixed(0)}% logs-APM)`);
+  }
+  
+  if (data.healthCheck.monitorsMissingRecipients !== undefined && data.healthCheck.monitorsMissingRecipients > 100) {
+    realGaps.push(isPt
+      ? `${fmtNum(data.healthCheck.monitorsMissingRecipients)} monitores sem destinatário`
+      : `${fmtNum(data.healthCheck.monitorsMissingRecipients)} monitors without recipient`);
+  }
+  
+  if (data.healthCheck.monitorsMissingDelay !== undefined && data.healthCheck.monitorsMissingDelay > 1000) {
+    realGaps.push(isPt
+      ? `${fmtNum(data.healthCheck.monitorsMissingDelay)} monitores sem delay configurado`
+      : `${fmtNum(data.healthCheck.monitorsMissingDelay)} monitors without configured delay`);
+  }
+  
+  if (data.healthCheck.hostsWithEnvTag !== undefined && data.healthCheck.hostsWithEnvTag < 70) {
+    realGaps.push(isPt
+      ? `tagging precário (${data.healthCheck.hostsWithEnvTag.toFixed(0)}% hosts com env tag)`
+      : `weak tagging (${data.healthCheck.hostsWithEnvTag.toFixed(0)}% hosts with env tag)`);
+  }
+  
+  if (data.healthCheck.rumSessionsWithUserID !== undefined && data.healthCheck.rumSessionsWithUserID < 30) {
+    realGaps.push(isPt
+      ? `RUM sem identificação de usuário (${data.healthCheck.rumSessionsWithUserID.toFixed(0)}%)`
+      : `RUM without user identification (${data.healthCheck.rumSessionsWithUserID.toFixed(0)}%)`);
+  }
+  
+  // Top 2 gaps for the summary
+  const topGaps = realGaps.slice(0, 2);
+  
+  // === Determine path forward tone ===
+  let pathTone;
+  if (finalLevel === 0 || finalLevel === 1) {
+    pathTone = isPt ? 'rescue' : 'rescue';
+  } else if (finalLevel === 2 || finalLevel === 3) {
+    pathTone = isPt ? 'evolution' : 'evolution';
+  } else {
+    pathTone = isPt ? 'excellence' : 'excellence';
+  }
+  
+  // === Build the 3 paragraphs ===
+  const customer = customerName || (isPt ? 'O cliente' : 'The customer');
+  
+  // Maturity level name (in target language)
+  const levelName = MATURITY_LEVELS[finalLevel]?.label?.[lang] || `Level ${finalLevel}`;
+  
+  // Paragraph 1: Positioning
+  let p1;
+  if (isPt) {
+    p1 = `${customer} opera hoje em ${levelName} com score ${rawScore.toFixed(2)}, posicionando-se como ${profileDescription}.`;
+  } else {
+    p1 = `${customer} currently operates at ${levelName} with a score of ${rawScore.toFixed(2)}, positioning itself as a ${profileDescription}.`;
+  }
+  
+  // Paragraph 2: Scale + investment + gaps
+  const scaleParts = [];
+  if (totalHosts > 0) {
+    scaleParts.push(isPt ? `${fmtNum(totalHosts)} hosts` : `${fmtNum(totalHosts)} hosts`);
+  }
+  if (productCount > 0) {
+    scaleParts.push(isPt ? `${productCount} produtos Datadog` : `${productCount} Datadog products`);
+  }
+  
+  let p2 = '';
+  if (scaleParts.length > 0) {
+    if (isPt) {
+      p2 = `Com ${scaleParts.join(' e ')} ativos`;
+      if (monthlySpend > 0) {
+        p2 += ` e investimento atual de ${fmtCurrency(monthlySpend)}/mês`;
+      }
+      p2 += `, a base técnica é ${scaleQualifier === 'enterprise' ? 'robusta' : scaleQualifier === 'mid-market' ? 'consolidada' : 'em formação'}`;
+    } else {
+      p2 = `With ${scaleParts.join(' and ')} active`;
+      if (monthlySpend > 0) {
+        p2 += ` and current investment of ${fmtCurrency(monthlySpend)}/month`;
+      }
+      p2 += `, the technical foundation is ${scaleQualifier === 'enterprise-scale' ? 'robust' : scaleQualifier === 'mid-market' ? 'consolidated' : 'forming'}`;
+    }
+    
+    // Add the gaps
+    if (topGaps.length > 0) {
+      if (isPt) {
+        p2 += ` — entretanto, gaps específicos em ${topGaps.join(' e ')} limitam o aproveitamento pleno do investimento atual.`;
+      } else {
+        p2 += ` — however, specific gaps in ${topGaps.join(' and ')} limit full value capture from the current investment.`;
+      }
+    } else {
+      p2 += isPt ? '.' : '.';
+    }
+  }
+  
+  // Paragraph 3: Path forward (varies by maturity level)
+  let p3 = '';
+  const nextLevel = Math.min(finalLevel + 1, 5);
+  const nextLevelName = MATURITY_LEVELS[nextLevel]?.label?.[lang] || `Level ${nextLevel}`;
+  
+  if (pathTone === 'rescue') {
+    if (isPt) {
+      p3 = `Recuperação para ${nextLevelName} exige resgate operacional cirúrgico nos próximos 60 dias. ${isUnbalanced ? 'O perfil contrastante indica que ' + (bottomDim ? bottomDim.label : 'as fraquezas') + ' precisa ser endereçada antes de qualquer expansão de capability.' : 'A higiene operacional vem antes de evolução estrutural.'}`;
+    } else {
+      p3 = `Recovery to ${nextLevelName} requires surgical operational rescue in the next 60 days. ${isUnbalanced ? 'The contrasting profile indicates ' + (bottomDim ? bottomDim.label : 'the weaknesses') + ' must be addressed before any capability expansion.' : 'Operational hygiene comes before structural evolution.'}`;
+    }
+  } else if (pathTone === 'evolution') {
+    if (isPt) {
+      const directness = isUnbalanced ? 'cirúrgico' : 'direto';
+      p3 = `O caminho para ${nextLevelName} é ${directness}: estabilizar fundamentos operacionais nos próximos 60 dias antes de avançar para correlação completa. Esses gaps são governança, não capacidade da plataforma — endereçáveis sem reestruturação.`;
+    } else {
+      const directness = isUnbalanced ? 'surgical' : 'direct';
+      p3 = `The path to ${nextLevelName} is ${directness}: stabilize operational fundamentals in the next 60 days before pushing for complete correlation. These gaps are governance issues, not platform capability issues — addressable without restructuring.`;
+    }
+  } else {
+    // Excellence
+    if (isPt) {
+      p3 = `O cliente tem maturidade técnica para liderar adoção de features avançadas. Próxima fronteira: capabilities preditivas via Watchdog/anomaly detection e SLO baseado em RUM. Foco da próxima conversa: expansão de uso, não correção de gaps.`;
+    } else {
+      p3 = `The customer has the technical maturity to lead advanced feature adoption. Next frontier: predictive capabilities via Watchdog/anomaly detection and RUM-based SLOs. Next conversation focus: usage expansion, not gap remediation.`;
+    }
+  }
+  
+  return {
+    paragraphs: [p1, p2, p3].filter(p => p && p.length > 0),
+    profile: {
+      isUnbalanced,
+      isBalanced,
+      stdev,
+      topDim,
+      bottomDim,
+      scale: scaleQualifier,
+      pathTone
+    }
   };
 }
 
@@ -4021,7 +4283,9 @@ function exportToHTML(assessment, serviceName, teamName, businessOwner, technica
   let workingAssessment = assessment;
   if (inputData) {
     try {
-      const regenerated = assessMaturity(inputData, language);
+      // v32: pass teamName/serviceName as customerName for personalized executive summary
+      const customerName = teamName || serviceName || null;
+      const regenerated = assessMaturity(inputData, language, customerName);
       // Preserve the scores from original (in case of slight floating-point differences)
       // but use all the narrative content from the regenerated assessment
       workingAssessment = {
@@ -4207,6 +4471,19 @@ function exportToHTML(assessment, serviceName, teamName, businessOwner, technica
       </div>
     </div>
   </div>
+
+  ${assessment.executiveSummary && assessment.executiveSummary.paragraphs && assessment.executiveSummary.paragraphs.length > 0 ? `
+    <div style="background: linear-gradient(135deg, #f5f3ff 0%, #faf5ff 100%); border: 2px solid #632CA6; border-left: 6px solid #632CA6; border-radius: 12px; padding: 1.75rem 2rem; margin-bottom: 2rem;">
+      <div style="font-size: 0.75rem; text-transform: uppercase; font-weight: 700; color: #632CA6; letter-spacing: 0.08em; margin-bottom: 0.875rem;">
+        📋 ${t.executiveSummary}
+      </div>
+      ${assessment.executiveSummary.paragraphs.map((para, idx) => `
+        <p style="margin: ${idx === 0 ? '0 0 0.875rem 0' : '0.875rem 0'}; color: #1f2937; font-size: 0.9375rem; line-height: 1.65; font-weight: ${idx === 0 ? '500' : '400'};">
+          ${para}
+        </p>
+      `).join('')}
+    </div>
+  ` : ''}
 
   <div class="maturity-card">
     <div style="font-size: 0.875rem; text-transform: uppercase; font-weight: 600; color: #6b7280; margin-bottom: 0.5rem;">
@@ -6056,7 +6333,9 @@ function ObservabilityMaturityAssessment({ onBack, onNavigateToAdmin, initialLan
     
     console.log('🧮 [CALCULATE] Using real data:', dataToUse);
     
-    const result = assessMaturity(dataToUse, language);
+    // v32: pass teamName/serviceName as customerName for personalized executive summary
+    const customerNameForSummary = teamName || serviceName || null;
+    const result = assessMaturity(dataToUse, language, customerNameForSummary);
     console.log('🧮 [CALCULATE] Assessment result:', result);
     setAssessment(result);
     // v29: Store input data + language for later regeneration in any language
@@ -6067,7 +6346,7 @@ function ObservabilityMaturityAssessment({ onBack, onNavigateToAdmin, initialLan
     setTimeout(() => {
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }, 100);
-  }, [language, manualData]);
+  }, [language, manualData, teamName, serviceName]);
 
   const handleSaveAssessment = useCallback(() => {
     if (!assessment || !accountId || !teamName) return;
@@ -6919,6 +7198,43 @@ function AssessmentResults({ assessment, serviceName, teamName, businessOwner, t
   
   return (
     <>
+      {/* v32: Executive Summary — Principal CSM tone, 3 personalized paragraphs */}
+      {assessment.executiveSummary && assessment.executiveSummary.paragraphs && assessment.executiveSummary.paragraphs.length > 0 && (
+        <div style={{
+          background: 'linear-gradient(135deg, #f5f3ff 0%, #faf5ff 100%)',
+          border: '2px solid #632CA6',
+          borderLeft: '6px solid #632CA6',
+          borderRadius: '12px',
+          padding: '1.75rem 2rem',
+          marginBottom: '2rem'
+        }}>
+          <div style={{ 
+            fontSize: '0.75rem', 
+            textTransform: 'uppercase', 
+            fontWeight: '700', 
+            color: '#632CA6', 
+            letterSpacing: '0.08em',
+            marginBottom: '0.875rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem'
+          }}>
+            📋 {t.executiveSummary}
+          </div>
+          {assessment.executiveSummary.paragraphs.map((para, idx) => (
+            <p key={idx} style={{
+              margin: idx === 0 ? '0 0 0.875rem 0' : '0.875rem 0',
+              color: '#1f2937',
+              fontSize: '0.9375rem',
+              lineHeight: '1.65',
+              fontWeight: idx === 0 ? '500' : '400'
+            }}>
+              {para}
+            </p>
+          ))}
+        </div>
+      )}
+      
       {/* Maturity Card */}
       <div style={{
         background: `linear-gradient(135deg, ${level.color}22 0%, ${level.color}11 100%)`,
