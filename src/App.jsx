@@ -967,13 +967,13 @@ const DATADOG_TRAINING = {
       courses: [
         {
           name: 'Datadog Fundamentals',
-          url: 'https://learn.datadoghq.com/courses/datadog-fundamentals',
+          url: 'https://learn.datadoghq.com/bundles/datadog-fundamentals-certification-learning-path',
           description: 'Fundamentos de governança e organização da plataforma',
           duration: '2-3 horas'
         },
         {
           name: 'Monitor Best Practices',
-          url: 'https://learn.datadoghq.com/courses/creating-better-monitors',
+          url: 'https://learn.datadoghq.com/courses/getting-started-monitors',
           description: 'Criação e gerenciamento eficaz de monitores',
           duration: '1-2 horas'
         },
@@ -990,13 +990,13 @@ const DATADOG_TRAINING = {
       courses: [
         {
           name: 'Datadog Fundamentals',
-          url: 'https://learn.datadoghq.com/courses/datadog-fundamentals',
+          url: 'https://learn.datadoghq.com/bundles/datadog-fundamentals-certification-learning-path',
           description: 'Platform governance and organization fundamentals',
           duration: '2-3 hours'
         },
         {
           name: 'Monitor Best Practices',
-          url: 'https://learn.datadoghq.com/courses/creating-better-monitors',
+          url: 'https://learn.datadoghq.com/courses/getting-started-monitors',
           description: 'Effective monitor creation and management',
           duration: '1-2 hours'
         },
@@ -1015,19 +1015,19 @@ const DATADOG_TRAINING = {
       courses: [
         {
           name: 'APM Deep Dive',
-          url: 'https://learn.datadoghq.com/courses/apm-deep-dive',
+          url: 'https://learn.datadoghq.com/courses/getting-started-apm',
           description: 'Distributed tracing e correlação logs-APM',
           duration: '3-4 horas'
         },
         {
           name: 'Log Management',
-          url: 'https://learn.datadoghq.com/courses/log-management',
+          url: 'https://learn.datadoghq.com/courses/log-explorer',
           description: 'Pipelines, parsing e correlação de logs',
           duration: '2-3 horas'
         },
         {
           name: 'RUM Fundamentals',
-          url: 'https://learn.datadoghq.com/courses/real-user-monitoring',
+          url: 'https://learn.datadoghq.com/courses/intro-to-rum',
           description: 'Real User Monitoring e user tracking',
           duration: '2 horas'
         }
@@ -1038,19 +1038,19 @@ const DATADOG_TRAINING = {
       courses: [
         {
           name: 'APM Deep Dive',
-          url: 'https://learn.datadoghq.com/courses/apm-deep-dive',
+          url: 'https://learn.datadoghq.com/courses/getting-started-apm',
           description: 'Distributed tracing and logs-APM correlation',
           duration: '3-4 hours'
         },
         {
           name: 'Log Management',
-          url: 'https://learn.datadoghq.com/courses/log-management',
+          url: 'https://learn.datadoghq.com/courses/log-explorer',
           description: 'Pipelines, parsing, and log correlation',
           duration: '2-3 hours'
         },
         {
           name: 'RUM Fundamentals',
-          url: 'https://learn.datadoghq.com/courses/real-user-monitoring',
+          url: 'https://learn.datadoghq.com/courses/intro-to-rum',
           description: 'Real User Monitoring and user tracking',
           duration: '2 hours'
         }
@@ -1063,19 +1063,19 @@ const DATADOG_TRAINING = {
       courses: [
         {
           name: 'Alerting Best Practices',
-          url: 'https://learn.datadoghq.com/courses/creating-better-monitors',
+          url: 'https://learn.datadoghq.com/courses/getting-started-monitors',
           description: 'Reduzir alert fatigue e melhorar precisão',
           duration: '1-2 horas'
         },
         {
           name: 'Incident Management',
-          url: 'https://learn.datadoghq.com/courses/incident-management',
+          url: 'https://learn.datadoghq.com/courses/getting-started-incident-management',
           description: 'Resposta estruturada a incidentes',
           duration: '2 horas'
         },
         {
           name: 'Synthetic Monitoring',
-          url: 'https://learn.datadoghq.com/courses/synthetic-monitoring',
+          url: 'https://learn.datadoghq.com/courses/getting-started-with-synthetic-browser-testing',
           description: 'Monitoramento proativo com Synthetics',
           duration: '1-2 horas'
         }
@@ -1086,19 +1086,19 @@ const DATADOG_TRAINING = {
       courses: [
         {
           name: 'Alerting Best Practices',
-          url: 'https://learn.datadoghq.com/courses/creating-better-monitors',
+          url: 'https://learn.datadoghq.com/courses/getting-started-monitors',
           description: 'Reduce alert fatigue and improve precision',
           duration: '1-2 hours'
         },
         {
           name: 'Incident Management',
-          url: 'https://learn.datadoghq.com/courses/incident-management',
+          url: 'https://learn.datadoghq.com/courses/getting-started-incident-management',
           description: 'Structured incident response',
           duration: '2 hours'
         },
         {
           name: 'Synthetic Monitoring',
-          url: 'https://learn.datadoghq.com/courses/synthetic-monitoring',
+          url: 'https://learn.datadoghq.com/courses/getting-started-with-synthetic-browser-testing',
           description: 'Proactive monitoring with Synthetics',
           duration: '1-2 hours'
         }
@@ -1111,7 +1111,7 @@ const DATADOG_TRAINING = {
       courses: [
         {
           name: 'Log Optimization',
-          url: 'https://learn.datadoghq.com/courses/log-management',
+          url: 'https://learn.datadoghq.com/courses/log-explorer',
           description: 'Exclusion filters e otimização de ingestão',
           duration: '1 hora'
         },
@@ -1128,7 +1128,7 @@ const DATADOG_TRAINING = {
       courses: [
         {
           name: 'Log Optimization',
-          url: 'https://learn.datadoghq.com/courses/log-management',
+          url: 'https://learn.datadoghq.com/courses/log-explorer',
           description: 'Exclusion filters and ingestion optimization',
           duration: '1 hour'
         },
