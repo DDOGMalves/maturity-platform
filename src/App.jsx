@@ -2439,8 +2439,12 @@ function assessMaturity(data, lang, customerName = null) {
   // Generate recommendations
   const recommendations = generateRecommendations(dimensions, data, insights, lang);
   
+  // v35: Escalate priority for recommendations impacting critical dimensions (≤1)
+  const escalatedRecommendations = escalateRecommendations(recommendations, dimensions, lang);
+  
   // v30: Classify into Quick Wins (≤30d) and Strategic (>30d), with hard limits
-  const classifiedRecommendations = classifyRecommendations(recommendations, lang);
+  // v35: Pass dimensions for dynamic limit expansion when there's a critical dimension
+  const classifiedRecommendations = classifyRecommendations(escalatedRecommendations, lang, dimensions);
   
   // Generate maturity rationale
   const rationale = generateMaturityRationale(finalRawScore, finalLevel, dimensions, gatings, lang);
@@ -2460,8 +2464,8 @@ function assessMaturity(data, lang, customerName = null) {
     gatings,
     dimensions,
     insights,
-    recommendations,
-    classifiedRecommendations, // NEW v30: { quickWins, strategic }
+    recommendations: escalatedRecommendations, // v35: escalated by dimension severity
+    classifiedRecommendations, // NEW v30: { quickWins, strategic, strategicLimit, quickWinsLimit }
     rationale,
     executiveSummary, // NEW v32: { paragraphs[], profile }
     roadmap,
@@ -2796,121 +2800,320 @@ function generateExecutiveSummary(data, dimensions, finalLevel, rawScore, custom
 }
 
 function generateRoadmapToNextLevel(currentLevel, dimensions, data, lang) {
+  const isPt = lang === 'pt';
   const nextLevel = Math.min(currentLevel + 1, 5);
   const blockers = [];
-  const phases = [];
   const milestones = [];
   
-  // Identify blockers based on dimension scores
+  // ==========================================================================
+  // v37: Calculate σ and profile signals to determine roadmap strategy
+  // ==========================================================================
+  const dimScores = {
+    adoption: dimensions.adoption.score,
+    governance: dimensions.governance.score,
+    quality: dimensions.quality.score,
+    alerting: dimensions.alerting.score,
+    cost: dimensions.cost.score
+  };
+  const validScores = Object.values(dimScores).filter(s => typeof s === 'number' && !isNaN(s));
+  const avgScore = validScores.length > 0 
+    ? validScores.reduce((a, b) => a + b, 0) / validScores.length 
+    : 2;
+  const variance = validScores.length > 0
+    ? validScores.reduce((sum, s) => sum + Math.pow(s - avgScore, 2), 0) / validScores.length
+    : 0;
+  const stdev = Math.sqrt(variance);
+  
+  // Sort dims by score
+  const sortedDims = Object.entries(dimScores)
+    .filter(([, s]) => typeof s === 'number' && !isNaN(s))
+    .sort((a, b) => a[1] - b[1]);
+  const weakest = sortedDims[0]; // [key, score]
+  const strongest = sortedDims[sortedDims.length - 1];
+  const delta = strongest[1] - weakest[0];
+  
+  // Strong dimensions: don't recommend strengthening these
+  const strongDims = new Set(sortedDims.filter(([, s]) => s >= 3.5).map(([k]) => k));
+  // Critical dimensions: prioritize roadmap on these
+  const criticalDims = new Set(sortedDims.filter(([, s]) => s < 1.5).map(([k]) => k));
+  
+  // Dimension labels for headers and messages
+  const dimLabels = {
+    adoption: isPt ? 'Adoção' : 'Adoption',
+    governance: isPt ? 'Governança Operacional' : 'Operational Governance',
+    quality: isPt ? 'Qualidade de Telemetria' : 'Telemetry Quality',
+    alerting: isPt ? 'Confiabilidade de Alertas' : 'Alerting Reliability',
+    cost: isPt ? 'Governança de Custo' : 'Cost Governance'
+  };
+  
+  // ==========================================================================
+  // v37: Determine strategic approach based on σ + delta
+  // ==========================================================================
+  let strategyType, strategyMessage;
+  if (stdev >= 1.2 && delta >= 2.5) {
+    // SURGICAL: contrasting customer with critical weakness in 1-2 dims
+    strategyType = 'surgical';
+    if (isPt) {
+      strategyMessage = `Esta é uma jornada **cirúrgica**. O perfil contrastante (forte em ${dimLabels[strongest[0]]} ${strongest[1].toFixed(1)}, crítico em ${dimLabels[weakest[0]]} ${weakest[1].toFixed(1)}) exige foco quase total em ${dimLabels[weakest[0]]} antes de qualquer expansão. Não desperdice ciclos onde já há excelência — preserve a força e endereçe a fragilidade.`;
+    } else {
+      strategyMessage = `This is a **surgical** journey. The contrasting profile (strong in ${dimLabels[strongest[0]]} ${strongest[1].toFixed(1)}, critical in ${dimLabels[weakest[0]]} ${weakest[1].toFixed(1)}) demands near-total focus on ${dimLabels[weakest[0]]} before any expansion. Don't waste cycles where excellence already exists — preserve the strength and address the fragility.`;
+    }
+  } else if (stdev >= 0.6) {
+    // CALIBRATION: moderate spread, work the weak points without losing pace
+    strategyType = 'calibration';
+    if (isPt) {
+      strategyMessage = `Esta é uma jornada de **calibração**. O cliente tem perfil misto — fraquezas identificáveis em ${dimLabels[weakest[0]]} (${weakest[1].toFixed(1)}) sem ser uma crise sistêmica. Priorize os pontos fracos preservando o ritmo geral de evolução.`;
+    } else {
+      strategyMessage = `This is a **calibration** journey. The customer has a mixed profile — identifiable weaknesses in ${dimLabels[weakest[0]]} (${weakest[1].toFixed(1)}) without being a systemic crisis. Prioritize the weak points while preserving overall evolution pace.`;
+    }
+  } else {
+    // ELEVATION: balanced customer, lift the whole average
+    strategyType = 'elevation';
+    if (isPt) {
+      strategyMessage = `Esta é uma jornada de **elevação geral**. O cliente apresenta perfil equilibrado (todas as dimensões em score próximo, σ=${stdev.toFixed(2)}). A evolução deve ocorrer em paralelo, sem fixação cirúrgica em uma única dimensão — o objetivo é elevar a média do conjunto.`;
+    } else {
+      strategyMessage = `This is a **general elevation** journey. The customer shows a balanced profile (all dimensions at similar scores, σ=${stdev.toFixed(2)}). Evolution should happen in parallel, without surgical fixation on a single dimension — the goal is to raise the overall average.`;
+    }
+  }
+  
+  // ==========================================================================
+  // Identify blockers (filtered by what actually applies)
+  // ==========================================================================
   if (dimensions.governance.score < 3.5) {
-    blockers.push(lang === 'pt'
+    blockers.push(isPt
       ? 'Governança operacional inconsistente'
       : 'Inconsistent operational governance');
   }
-  
   if (dimensions.alerting.score < 3.5) {
-    blockers.push(lang === 'pt'
+    blockers.push(isPt
       ? 'Confiabilidade de alertas insuficiente'
       : 'Insufficient alerting reliability');
   }
-  
   if (dimensions.quality.score < 3.5) {
-    blockers.push(lang === 'pt'
+    blockers.push(isPt
       ? 'Correlação de telemetria ainda limitada'
       : 'Telemetry correlation still limited');
   }
-  
   if (data.healthCheck.rumSessionsWithUserID < 80) {
-    blockers.push(lang === 'pt'
+    blockers.push(isPt
       ? 'Rastreamento de usuário incompleto'
       : 'Incomplete user tracking');
   }
   
-  // Phase 1: Stabilize operational foundation
-  phases.push({
-    number: 1,
-    title: lang === 'pt' 
-      ? 'Estabilizar fundação operacional'
-      : 'Stabilize operational foundation',
-    actions: [
-      lang === 'pt'
+  // ==========================================================================
+  // v37: Phase definitions (each phase has applicabilityCheck)
+  // Each phase tagged with `dimensionFocus` for reordering logic
+  // ==========================================================================
+  const allPhases = [];
+  
+  // PHASE: Stabilize operational foundation (alerting/governance)
+  if (dimensions.alerting.score < 3.5 || dimensions.governance.score < 3.5) {
+    const actions = [];
+    // Filter: only push actions that actually apply
+    if (data.healthCheck.monitorsMissingRecipients > 50) {
+      actions.push(isPt
         ? 'Configurar recipients nos monitores críticos'
-        : 'Configure recipients on critical monitors',
-      lang === 'pt'
+        : 'Configure recipients on critical monitors');
+    }
+    if (data.healthCheck.monitorsMuted60Days > 100) {
+      actions.push(isPt
         ? 'Revisar monitores silenciados há mais de 60 dias'
-        : 'Review monitors muted for 60+ days',
-      lang === 'pt'
+        : 'Review monitors muted for 60+ days');
+    }
+    if (data.healthCheck.monitorsMissingDelay > 1000) {
+      actions.push(isPt
         ? 'Reduzir alert fatigue e ajustar recommended delay'
-        : 'Reduce alert fatigue and adjust recommended delay',
-      lang === 'pt'
+        : 'Reduce alert fatigue and adjust recommended delay');
+    }
+    if (dimensions.governance.score < 3) {
+      actions.push(isPt
         ? 'Estabelecer ownership claro por monitor/domínio'
-        : 'Establish clear ownership per monitor/domain'
-    ],
-    outcome: lang === 'pt'
-      ? 'Base de alertas mais confiável e governável'
-      : 'More reliable and governable alert base',
-    why: lang === 'pt'
-      ? 'Sem higiene operacional, não existe maturidade preditiva sustentável'
-      : 'Without operational hygiene, sustainable predictive maturity cannot exist'
-  });
+        : 'Establish clear ownership per monitor/domain');
+    }
+    
+    if (actions.length > 0) {
+      allPhases.push({
+        dimensionFocus: 'alerting+governance',
+        title: isPt 
+          ? 'Estabilizar fundação operacional'
+          : 'Stabilize operational foundation',
+        actions,
+        outcome: isPt
+          ? 'Base de alertas mais confiável e governável'
+          : 'More reliable and governable alert base',
+        why: isPt
+          ? 'Sem higiene operacional, não existe maturidade preditiva sustentável'
+          : 'Without operational hygiene, sustainable predictive maturity cannot exist'
+      });
+    }
+  }
   
-  // Phase 2: Improve telemetry quality
-  phases.push({
-    number: 2,
-    title: lang === 'pt'
-      ? 'Melhorar qualidade de correlação'
-      : 'Improve correlation quality',
-    actions: [
-      lang === 'pt'
+  // PHASE: Improve correlation quality (quality dimension)
+  if (dimensions.quality.score < 3.5) {
+    const actions = [];
+    if (data.healthCheck.percentageLogsCorrelated < 70) {
+      actions.push(isPt
         ? 'Aumentar correlação logs-APM para 70%+'
-        : 'Increase logs-APM correlation to 70%+',
-      lang === 'pt'
+        : 'Increase logs-APM correlation to 70%+');
+    }
+    if (data.healthCheck.hostsWithEnvTag < 95) {
+      actions.push(isPt
         ? 'Implementar unified tagging em escala'
-        : 'Implement unified tagging at scale',
-      lang === 'pt'
+        : 'Implement unified tagging at scale');
+    }
+    if (data.healthCheck.rumSessionsWithUserID < 80) {
+      actions.push(isPt
         ? 'Melhorar cobertura de user tracking em RUM'
-        : 'Improve RUM user tracking coverage'
-    ],
-    outcome: lang === 'pt'
-      ? 'RCA mais rápida e melhor visibilidade de impacto real'
-      : 'Faster RCA and better real impact visibility',
-    why: lang === 'pt'
-      ? 'Nível 4 exige capacidade mais forte de antecipação com contexto confiável'
-      : 'Level 4 requires stronger anticipation capability with reliable context'
-  });
+        : 'Improve RUM user tracking coverage');
+    }
+    
+    if (actions.length > 0) {
+      allPhases.push({
+        dimensionFocus: 'quality',
+        title: isPt
+          ? 'Melhorar qualidade de correlação'
+          : 'Improve correlation quality',
+        actions,
+        outcome: isPt
+          ? 'RCA mais rápida e melhor visibilidade de impacto real'
+          : 'Faster RCA and better real impact visibility',
+        why: isPt
+          ? 'Sem dados correlacionáveis, troubleshooting depende de inferência manual'
+          : 'Without correlatable data, troubleshooting depends on manual inference'
+      });
+    }
+  }
   
-  // Phase 3: Build next-level readiness
-  if (nextLevel >= 4) {
-    phases.push({
-      number: 3,
-      title: lang === 'pt'
+  // PHASE: Expand adoption (adoption dimension) — only if low
+  if (dimensions.adoption.score < 3.0 && !strongDims.has('adoption')) {
+    const actions = [];
+    actions.push(isPt
+      ? 'Aumentar engajamento de usuários ativos na plataforma'
+      : 'Increase active user engagement on the platform');
+    actions.push(isPt
+      ? 'Capacitar times com Datadog Fundamentals + APM Deep Dive'
+      : 'Train teams with Datadog Fundamentals + APM Deep Dive');
+    if (dimensions.adoption.score < 2.0) {
+      actions.push(isPt
+        ? 'Estabelecer champions internos para evangelização da plataforma'
+        : 'Establish internal champions for platform evangelism');
+    }
+    
+    allPhases.push({
+      dimensionFocus: 'adoption',
+      title: isPt
+        ? 'Expandir adoção da plataforma'
+        : 'Expand platform adoption',
+      actions,
+      outcome: isPt
+        ? 'Maior cobertura de uso e diversidade de perfis usando a plataforma'
+        : 'Greater usage coverage and diversity of personas using the platform',
+      why: isPt
+        ? 'Adoção rasa limita o ROI do investimento em observabilidade'
+        : 'Shallow adoption limits ROI of observability investment'
+    });
+  }
+  
+  // PHASE: Cost governance (cost dimension) — only if low
+  if (dimensions.cost.score < 3.0 && !strongDims.has('cost')) {
+    const actions = [];
+    if (data.healthCheck.logsExcludedByExclusion < 65) {
+      actions.push(isPt
+        ? 'Implementar exclusion filters para reduzir volume de logs'
+        : 'Implement exclusion filters to reduce log volume');
+    }
+    actions.push(isPt
+      ? 'Configurar usage attribution para visibilidade de custo por equipe'
+      : 'Configure usage attribution for per-team cost visibility');
+    actions.push(isPt
+      ? 'Definir budgets e alertas de consumo por produto'
+      : 'Define budgets and consumption alerts per product');
+    
+    allPhases.push({
+      dimensionFocus: 'cost',
+      title: isPt
+        ? 'Estabelecer governança de custo'
+        : 'Establish cost governance',
+      actions,
+      outcome: isPt
+        ? 'Custos previsíveis e atribuíveis por unidade de negócio'
+        : 'Predictable and attributable costs per business unit',
+      why: isPt
+        ? 'Sem visibilidade de custo, otimização vira reativa em vez de planejada'
+        : 'Without cost visibility, optimization becomes reactive instead of planned'
+    });
+  }
+  
+  // PHASE: Predictive capability (only if nextLevel >= 4 AND no critical dims)
+  if (nextLevel >= 4 && criticalDims.size === 0) {
+    allPhases.push({
+      dimensionFocus: 'predictive',
+      title: isPt
         ? 'Construir capacidade preditiva'
         : 'Build predictive capability',
       actions: [
-        lang === 'pt'
+        isPt
           ? 'Consolidar sinais de tendência e anomalia nas jornadas críticas'
           : 'Consolidate trend and anomaly signals in critical journeys',
-        lang === 'pt'
+        isPt
           ? 'Priorizar monitores e dashboards para antecipação de falhas'
           : 'Prioritize monitors and dashboards for failure anticipation',
-        lang === 'pt'
-          ? 'Expandir uso de mecanismos proativos onde houver evidência de valor'
-          : 'Expand use of proactive mechanisms where value is evident'
+        isPt
+          ? 'Expandir uso de Watchdog e anomaly detection onde houver evidência de valor'
+          : 'Expand use of Watchdog and anomaly detection where value is evident'
       ],
-      outcome: lang === 'pt'
+      outcome: isPt
         ? 'Operação menos reativa e maior capacidade de prevenção'
         : 'Less reactive operation and greater prevention capability',
-      why: lang === 'pt'
+      why: isPt
         ? 'Isso aproxima de fato do nível 4 do framework'
         : 'This actually moves toward framework Level 4'
     });
   }
   
-  // Generate milestones
+  // ==========================================================================
+  // v37: Reorder phases to put critical dimensions FIRST
+  // ==========================================================================
+  const phaseOrder = (phase) => {
+    // If phase focus is on a CRITICAL dim (≤1.5), priority 0 (top)
+    if (phase.dimensionFocus === 'quality' && criticalDims.has('quality')) return 0;
+    if (phase.dimensionFocus === 'cost' && criticalDims.has('cost')) return 0;
+    if (phase.dimensionFocus === 'adoption' && criticalDims.has('adoption')) return 0;
+    if (phase.dimensionFocus === 'alerting+governance' && (criticalDims.has('alerting') || criticalDims.has('governance'))) return 0;
+    
+    // If phase focus is on the WEAKEST dim, priority 1
+    if (phase.dimensionFocus === weakest[0]) return 1;
+    if (phase.dimensionFocus === 'alerting+governance' && (weakest[0] === 'alerting' || weakest[0] === 'governance')) return 1;
+    
+    // Default order: alerting/governance first, then quality, then cost/adoption, then predictive
+    const defaultOrder = {
+      'alerting+governance': 2,
+      'quality': 3,
+      'cost': 4,
+      'adoption': 5,
+      'predictive': 6
+    };
+    return defaultOrder[phase.dimensionFocus] || 7;
+  };
+  
+  const orderedPhases = [...allPhases].sort((a, b) => phaseOrder(a) - phaseOrder(b));
+  
+  // Re-number sequentially
+  const phases = orderedPhases.map((phase, idx) => ({
+    number: idx + 1,
+    title: phase.title,
+    actions: phase.actions,
+    outcome: phase.outcome,
+    why: phase.why
+  }));
+  
+  // ==========================================================================
+  // Generate milestones (unchanged)
+  // ==========================================================================
   const recipientRate = ((data.healthCheck.totalMonitors - data.healthCheck.monitorsMissingRecipients) / data.healthCheck.totalMonitors) * 100;
   if (recipientRate < 95) {
     milestones.push({
-      metric: lang === 'pt' ? 'Cobertura de recipients' : 'Recipient coverage',
+      metric: isPt ? 'Cobertura de recipients' : 'Recipient coverage',
       current: `${recipientRate.toFixed(1)}%`,
       target: '95%+',
       critical: recipientRate < 85
@@ -2920,16 +3123,16 @@ function generateRoadmapToNextLevel(currentLevel, dimensions, data, lang) {
   const mutedRate = (data.healthCheck.monitorsMuted60Days / data.healthCheck.totalMonitors) * 100;
   if (mutedRate > 3) {
     milestones.push({
-      metric: lang === 'pt' ? 'Monitores silenciados 60+ dias' : 'Monitors muted 60+ days',
+      metric: isPt ? 'Monitores silenciados 60+ dias' : 'Monitors muted 60+ days',
       current: `${data.healthCheck.monitorsMuted60Days} (${mutedRate.toFixed(1)}%)`,
-      target: lang === 'pt' ? '<3% do total' : '<3% of total',
+      target: isPt ? '<3% do total' : '<3% of total',
       critical: mutedRate > 5
     });
   }
   
   if (data.monitorQuality.qualityScore < 80) {
     milestones.push({
-      metric: lang === 'pt' ? 'Monitor health score' : 'Monitor health score',
+      metric: isPt ? 'Monitor health score' : 'Monitor health score',
       current: `${data.monitorQuality.qualityScore.toFixed(1)}%`,
       target: '80%+',
       critical: data.monitorQuality.qualityScore < 70
@@ -2938,7 +3141,7 @@ function generateRoadmapToNextLevel(currentLevel, dimensions, data, lang) {
   
   if (data.healthCheck.percentageLogsCorrelated < 70) {
     milestones.push({
-      metric: lang === 'pt' ? 'Correlação logs-APM' : 'Logs-APM correlation',
+      metric: isPt ? 'Correlação logs-APM' : 'Logs-APM correlation',
       current: `${data.healthCheck.percentageLogsCorrelated.toFixed(1)}%`,
       target: '70%+',
       critical: data.healthCheck.percentageLogsCorrelated < 50
@@ -2947,7 +3150,7 @@ function generateRoadmapToNextLevel(currentLevel, dimensions, data, lang) {
   
   if (data.healthCheck.hostsWithEnvTag < 95) {
     milestones.push({
-      metric: lang === 'pt' ? 'Unified tagging (env tag)' : 'Unified tagging (env tag)',
+      metric: isPt ? 'Unified tagging (env tag)' : 'Unified tagging (env tag)',
       current: `${data.healthCheck.hostsWithEnvTag.toFixed(1)}%`,
       target: '95%+',
       critical: data.healthCheck.hostsWithEnvTag < 70
@@ -2956,7 +3159,7 @@ function generateRoadmapToNextLevel(currentLevel, dimensions, data, lang) {
   
   if (data.healthCheck.rumSessionsWithUserID < 80) {
     milestones.push({
-      metric: lang === 'pt' ? 'RUM user tracking' : 'RUM user tracking',
+      metric: isPt ? 'RUM user tracking' : 'RUM user tracking',
       current: `${data.healthCheck.rumSessionsWithUserID.toFixed(1)}%`,
       target: '80%+',
       critical: data.healthCheck.rumSessionsWithUserID < 50
@@ -2968,7 +3171,15 @@ function generateRoadmapToNextLevel(currentLevel, dimensions, data, lang) {
     nextLevel,
     blockers,
     phases,
-    milestones
+    milestones,
+    // v37: NEW — strategy guidance
+    strategy: {
+      type: strategyType, // 'surgical' | 'calibration' | 'elevation'
+      message: strategyMessage,
+      stdev: stdev,
+      weakest: { key: weakest[0], score: weakest[0], label: dimLabels[weakest[0]] },
+      strongest: { key: strongest[0], score: strongest[1], label: dimLabels[strongest[0]] }
+    }
   };
 }
 
@@ -4060,7 +4271,8 @@ function generateRecommendations(dimensions, data, insights, lang) {
       timeframe: lang === 'pt' ? '7 dias' : '7 days',
       expectedOutcome: lang === 'pt'
         ? 'Alertas alcançam equipes responsáveis durante incidentes'
-        : 'Alerts reach responsible teams during incidents'
+        : 'Alerts reach responsible teams during incidents',
+      dimensionImpact: 'alerting' // v35: dimension affected
     });
   }
   
@@ -4077,7 +4289,8 @@ function generateRecommendations(dimensions, data, insights, lang) {
       timeframe: lang === 'pt' ? '15 dias' : '15 days',
       expectedOutcome: lang === 'pt'
         ? 'Cobertura de monitoramento reflete estado real dos serviços'
-        : 'Monitoring coverage reflects actual service state'
+        : 'Monitoring coverage reflects actual service state',
+      dimensionImpact: 'governance' // v35
     });
   }
   
@@ -4096,7 +4309,8 @@ function generateRecommendations(dimensions, data, insights, lang) {
       timeframe: lang === 'pt' ? '30 dias' : '30 days',
       expectedOutcome: lang === 'pt'
         ? 'Cada monitor tem owner e notification routing definidos'
-        : 'Each monitor has defined owner and notification routing'
+        : 'Each monitor has defined owner and notification routing',
+      dimensionImpact: 'governance' // v35
     });
   }
   
@@ -4114,7 +4328,8 @@ function generateRecommendations(dimensions, data, insights, lang) {
       timeframe: lang === 'pt' ? '45 dias' : '45 days',
       expectedOutcome: lang === 'pt'
         ? 'Meta: 70%+ de logs correlacionados com traces para RCA eficaz'
-        : 'Target: 70%+ logs correlated with traces for effective RCA'
+        : 'Target: 70%+ logs correlated with traces for effective RCA',
+      dimensionImpact: 'quality' // v35
     });
   }
   
@@ -4132,7 +4347,8 @@ function generateRecommendations(dimensions, data, insights, lang) {
       timeframe: lang === 'pt' ? '60 dias' : '60 days',
       expectedOutcome: lang === 'pt'
         ? 'Tags env, service, version em 100% da infraestrutura'
-        : 'Tags env, service, version on 100% of infrastructure'
+        : 'Tags env, service, version on 100% of infrastructure',
+      dimensionImpact: 'quality' // v35: tagging impacts data quality
     });
   }
   
@@ -4150,7 +4366,8 @@ function generateRecommendations(dimensions, data, insights, lang) {
       timeframe: lang === 'pt' ? '45 dias' : '45 days',
       expectedOutcome: lang === 'pt'
         ? 'Meta: 80%+ de sessões com user ID para melhor visibilidade'
-        : 'Target: 80%+ sessions with user ID for better visibility'
+        : 'Target: 80%+ sessions with user ID for better visibility',
+      dimensionImpact: 'quality' // v35
     });
   }
   
@@ -4168,7 +4385,8 @@ function generateRecommendations(dimensions, data, insights, lang) {
       timeframe: lang === 'pt' ? '30 dias' : '30 days',
       expectedOutcome: lang === 'pt'
         ? 'Redução de 10-15% no volume de logs sem perda de visibilidade crítica'
-        : '10-15% reduction in log volume without losing critical visibility'
+        : '10-15% reduction in log volume without losing critical visibility',
+      dimensionImpact: 'cost' // v35
     });
   }
   
@@ -4176,11 +4394,72 @@ function generateRecommendations(dimensions, data, insights, lang) {
 }
 
 /**
+ * v35: Severidade ponderada por dimensão.
+ * Se uma recomendação impacta uma dimensão em nível ≤1 (CRÍTICO),
+ * escala automaticamente a prioridade para CRITICAL e adiciona um
+ * campo `escalationReason` para explicar a escalação no relatório.
+ *
+ * Regra:
+ *   - dimensão impactada com score ≤ 1.0 → escalar para CRITICAL
+ *   - escalação só ELEVA prioridade (nunca rebaixa)
+ *   - adiciona escalationReason: { dimension, dimensionLabel, dimensionScore, dimensionLevel }
+ */
+function escalateRecommendations(recommendations, dimensions, lang) {
+  const isPt = lang === 'pt';
+  const CRITICAL_LABEL = isPt ? 'CRÍTICA' : 'CRITICAL';
+  
+  // Map dimension key → translated label for display
+  const dimLabels = {
+    adoption: isPt ? 'Adoção' : 'Adoption',
+    governance: isPt ? 'Governança Operacional' : 'Operational Governance',
+    quality: isPt ? 'Qualidade de Telemetria' : 'Telemetry Quality',
+    alerting: isPt ? 'Confiabilidade de Alertas' : 'Alerting Reliability',
+    cost: isPt ? 'Governança de Custo' : 'Cost Governance'
+  };
+  
+  // Priority numeric weight (lower = more critical)
+  const priorityWeight = (p) => {
+    const upper = String(p || '').toUpperCase();
+    if (upper === 'CRITICAL' || upper === 'CRÍTICA') return 0;
+    if (upper === 'HIGH' || upper === 'ALTA') return 1;
+    if (upper === 'MEDIUM' || upper === 'MÉDIA') return 2;
+    if (upper === 'LOW' || upper === 'BAIXA') return 3;
+    return 4;
+  };
+  
+  return recommendations.map(rec => {
+    if (!rec.dimensionImpact) return rec;
+    
+    const dim = dimensions[rec.dimensionImpact];
+    if (!dim || typeof dim.score !== 'number') return rec;
+    
+    // Only escalate if dimension is in level ≤1 (i.e., score < 1.5)
+    // and current priority is below CRITICAL
+    if (dim.score < 1.5 && priorityWeight(rec.priority) > 0) {
+      return {
+        ...rec,
+        priority: CRITICAL_LABEL,
+        originalPriority: rec.priority, // preserve for transparency
+        escalationReason: {
+          dimensionKey: rec.dimensionImpact,
+          dimensionLabel: dimLabels[rec.dimensionImpact] || rec.dimensionImpact,
+          dimensionScore: dim.score,
+          dimensionLevel: dim.level !== undefined ? dim.level : Math.floor(dim.score)
+        }
+      };
+    }
+    
+    return rec;
+  });
+}
+
+/**
  * v30: Classify recommendations into Quick Wins (≤30 days) and Strategic Initiatives (>30 days).
- * Limits: max 3 strategic + max 5 quick wins.
+ * v35: Limits dynamic — if any dimension is critical (≤1), expand to 4 strategic + 6 quick wins
+ *      to make space for escalated recommendations.
  * Within each bucket, prioritize by severity (CRITICAL > HIGH > MEDIUM > LOW).
  */
-function classifyRecommendations(recommendations, lang) {
+function classifyRecommendations(recommendations, lang, dimensions = null) {
   // Priority numeric weight for sorting
   const priorityWeight = (p) => {
     const upper = String(p || '').toUpperCase();
@@ -4197,6 +4476,20 @@ function classifyRecommendations(recommendations, lang) {
     return match ? parseInt(match[1], 10) : 999;
   };
   
+  // v35: Detect if any dimension is in critical level (≤1)
+  // If so, expand limits to make room for escalated recommendations
+  let strategicLimit = 3;
+  let quickWinsLimit = 5;
+  if (dimensions) {
+    const hasCriticalDim = Object.values(dimensions).some(
+      d => d && typeof d.score === 'number' && d.score < 1.5
+    );
+    if (hasCriticalDim) {
+      strategicLimit = 4;
+      quickWinsLimit = 6;
+    }
+  }
+  
   // Sort by priority, then by timeframe
   const sorted = [...recommendations].sort((a, b) => {
     const wa = priorityWeight(a.priority);
@@ -4212,13 +4505,13 @@ function classifyRecommendations(recommendations, lang) {
   for (const rec of sorted) {
     const days = extractDays(rec.timeframe);
     if (days <= 30) {
-      if (quickWins.length < 5) quickWins.push(rec);
+      if (quickWins.length < quickWinsLimit) quickWins.push(rec);
     } else {
-      if (strategic.length < 3) strategic.push(rec);
+      if (strategic.length < strategicLimit) strategic.push(rec);
     }
   }
   
-  return { quickWins, strategic };
+  return { quickWins, strategic, strategicLimit, quickWinsLimit };
 }
 
 function generateTrainingRecommendations(dimensions, lang) {
@@ -4659,6 +4952,16 @@ function exportToHTML(assessment, serviceName, teamName, businessOwner, technica
             <h3 style="margin: 0;">${rec.title}</h3>
             <span class="badge ${badgeClass[rec.priority] || ''}">${rec.priority}</span>
           </div>
+          ${rec.escalationReason ? `
+            <div style="background: #fef3c7; border-left: 3px solid #f59e0b; padding: 0.5rem 0.75rem; margin-bottom: 0.75rem; border-radius: 4px; font-size: 0.8125rem; color: #78350f;">
+              <strong>⚠️ ${language === 'pt' ? 'Severidade elevada' : 'Severity elevated'}:</strong>
+              ${language === 'pt' 
+                ? `dimensão de <strong>${rec.escalationReason.dimensionLabel}</strong> em Nível ${rec.escalationReason.dimensionLevel} (score ${rec.escalationReason.dimensionScore.toFixed(1)}) requer ação cirúrgica.`
+                : `<strong>${rec.escalationReason.dimensionLabel}</strong> dimension at Level ${rec.escalationReason.dimensionLevel} (score ${rec.escalationReason.dimensionScore.toFixed(1)}) requires surgical action.`
+              }
+              ${rec.originalPriority ? `<span style="color: #92400e; opacity: 0.7; font-size: 0.75rem; margin-left: 0.5rem;">(${language === 'pt' ? 'prioridade original' : 'original priority'}: ${rec.originalPriority})</span>` : ''}
+            </div>
+          ` : ''}
           <p style="color: #4b5563; font-size: 0.875rem; margin-bottom: 0.75rem;">${rec.rationale}</p>
           <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; font-size: 0.875rem;">
             <div>
@@ -4711,6 +5014,32 @@ function exportToHTML(assessment, serviceName, teamName, businessOwner, technica
 
   <div class="section" style="border: 2px solid #632CA6;">
     <h2 style="color: #632CA6; margin-top: 0;">${t.roadmapToNext}</h2>
+    
+    ${assessment.roadmap?.strategy ? (() => {
+      const strategy = assessment.roadmap.strategy;
+      const colors = {
+        surgical: { bg: '#fef2f2', border: '#dc2626', text: '#7f1d1d', icon: '🎯' },
+        calibration: { bg: '#fff7ed', border: '#f59e0b', text: '#78350f', icon: '⚖️' },
+        elevation: { bg: '#eff6ff', border: '#3b82f6', text: '#1e3a8a', icon: '📈' }
+      }[strategy.type] || { bg: '#fff7ed', border: '#f59e0b', text: '#78350f', icon: '⚖️' };
+      const labelByType = {
+        surgical: language === 'pt' ? 'Abordagem Cirúrgica' : 'Surgical Approach',
+        calibration: language === 'pt' ? 'Abordagem de Calibração' : 'Calibration Approach',
+        elevation: language === 'pt' ? 'Abordagem de Elevação Geral' : 'General Elevation Approach'
+      };
+      // Convert **bold** markdown to <strong>
+      const renderedMessage = strategy.message.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      return `
+        <div style="background: ${colors.bg}; border-left: 4px solid ${colors.border}; border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1.5rem;">
+          <div style="font-size: 0.75rem; font-weight: 700; color: ${colors.border}; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">
+            ${colors.icon} ${labelByType[strategy.type]}
+          </div>
+          <p style="margin: 0; font-size: 0.9375rem; line-height: 1.6; color: ${colors.text};">
+            ${renderedMessage}
+          </p>
+        </div>
+      `;
+    })() : ''}
     
     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 1.5rem; padding-bottom: 1.5rem; border-bottom: 2px solid #e5e7eb;">
       <div>
@@ -7683,6 +8012,33 @@ function AssessmentResults({ assessment, serviceName, teamName, businessOwner, t
                   {rec.priority}
                 </span>
               </div>
+              {rec.escalationReason && (
+                <div style={{
+                  background: '#fef3c7',
+                  borderLeft: '3px solid #f59e0b',
+                  padding: '0.5rem 0.75rem',
+                  marginBottom: '0.75rem',
+                  borderRadius: '4px',
+                  fontSize: '0.8125rem',
+                  color: '#78350f'
+                }}>
+                  <strong>⚠️ {language === 'pt' ? 'Severidade elevada' : 'Severity elevated'}:</strong>{' '}
+                  {language === 'pt' ? (
+                    <>
+                      dimensão de <strong>{rec.escalationReason.dimensionLabel}</strong> em Nível {rec.escalationReason.dimensionLevel} (score {rec.escalationReason.dimensionScore.toFixed(1)}) requer ação cirúrgica.
+                    </>
+                  ) : (
+                    <>
+                      <strong>{rec.escalationReason.dimensionLabel}</strong> dimension at Level {rec.escalationReason.dimensionLevel} (score {rec.escalationReason.dimensionScore.toFixed(1)}) requires surgical action.
+                    </>
+                  )}
+                  {rec.originalPriority && (
+                    <span style={{ color: '#92400e', opacity: 0.7, fontSize: '0.75rem', marginLeft: '0.5rem' }}>
+                      ({language === 'pt' ? 'prioridade original' : 'original priority'}: {rec.originalPriority})
+                    </span>
+                  )}
+                </div>
+              )}
               <p style={{ margin: '0 0 0.75rem 0', color: '#4b5563', fontSize: '0.875rem' }}>{rec.rationale}</p>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem', fontSize: '0.875rem' }}>
                 <div>
@@ -7764,6 +8120,56 @@ function AssessmentResults({ assessment, serviceName, teamName, businessOwner, t
         <h2 style={{ margin: '0 0 1rem 0', fontSize: '1.5rem', color: '#1f2937' }}>
           {t.roadmapToNext}
         </h2>
+        
+        {/* v37: Strategy header — varies by σ profile */}
+        {assessment.roadmap.strategy && (() => {
+          const strategy = assessment.roadmap.strategy;
+          const strategyColors = {
+            surgical: { bg: '#fef2f2', border: '#dc2626', text: '#7f1d1d', icon: '🎯' },
+            calibration: { bg: '#fff7ed', border: '#f59e0b', text: '#78350f', icon: '⚖️' },
+            elevation: { bg: '#eff6ff', border: '#3b82f6', text: '#1e3a8a', icon: '📈' }
+          };
+          const colors = strategyColors[strategy.type] || strategyColors.calibration;
+          const labelByType = {
+            surgical: language === 'pt' ? 'Abordagem Cirúrgica' : 'Surgical Approach',
+            calibration: language === 'pt' ? 'Abordagem de Calibração' : 'Calibration Approach',
+            elevation: language === 'pt' ? 'Abordagem de Elevação Geral' : 'General Elevation Approach'
+          };
+          // Render markdown-style **bold** as <strong>
+          const parts = strategy.message.split(/\*\*([^*]+)\*\*/);
+          return (
+            <div style={{
+              background: colors.bg,
+              borderLeft: `4px solid ${colors.border}`,
+              borderRadius: '8px',
+              padding: '1rem 1.25rem',
+              marginBottom: '1.5rem'
+            }}>
+              <div style={{ 
+                fontSize: '0.75rem', 
+                fontWeight: '700', 
+                color: colors.border, 
+                textTransform: 'uppercase', 
+                letterSpacing: '0.05em',
+                marginBottom: '0.5rem'
+              }}>
+                {colors.icon} {labelByType[strategy.type]}
+              </div>
+              <p style={{ 
+                margin: 0, 
+                fontSize: '0.9375rem', 
+                lineHeight: '1.6', 
+                color: colors.text 
+              }}>
+                {parts.map((part, idx) => 
+                  idx % 2 === 1 
+                    ? <strong key={idx}>{part}</strong> 
+                    : part
+                )}
+              </p>
+            </div>
+          );
+        })()}
         
         <div style={{
           background: 'white',
@@ -9717,7 +10123,7 @@ function DatadogAdminConsole({ onBack, onNavigateToAssessment, initialLanguage }
 
       {/* Main Content */}
       <div style={{ maxWidth: '1400px', margin: '0 auto', padding: '2rem' }}>
-        {view === 'dashboard' && <DashboardView kpis={portfolioKPIs} customers={customerGroups} t={t} />}
+        {view === 'dashboard' && <DashboardView kpis={portfolioKPIs} customers={customerGroups} t={t} onSelectCustomer={setSelectedCustomer} />}
         {view === 'customers' && <CustomersView customers={customerGroups} onSelectCustomer={setSelectedCustomer} t={t} language={language} onDataChanged={loadAllAssessments} />}
         {view === 'portfolio' && <PortfolioView customers={customerGroups} kpis={portfolioKPIs} t={t} />}
         {view === 'heatmap' && <HeatmapView customers={customerGroups} t={t} />}
@@ -9741,7 +10147,7 @@ function DatadogAdminConsole({ onBack, onNavigateToAssessment, initialLanguage }
 }
 
 // Dashboard View
-function DashboardView({ kpis, customers, t }) {
+function DashboardView({ kpis, customers, t, onSelectCustomer }) {
   if (!kpis) {
     return (
       <div style={{ textAlign: 'center', padding: '4rem', color: '#6b7280' }}>
@@ -9841,15 +10247,36 @@ function DashboardView({ kpis, customers, t }) {
         
         <div style={{ display: 'grid', gap: '0.75rem' }}>
           {customers.slice(0, 5).map(customer => (
-            <div key={customer.customerId} style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              padding: '1rem',
-              background: '#f9fafb',
-              borderRadius: '6px',
-              border: '1px solid #e5e7eb'
-            }}>
+            <div 
+              key={customer.customerId} 
+              onClick={() => onSelectCustomer && onSelectCustomer(customer)}
+              onMouseEnter={(e) => {
+                if (onSelectCustomer) {
+                  e.currentTarget.style.background = '#f3f4f6';
+                  e.currentTarget.style.borderColor = '#632CA6';
+                  e.currentTarget.style.transform = 'translateX(2px)';
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (onSelectCustomer) {
+                  e.currentTarget.style.background = '#f9fafb';
+                  e.currentTarget.style.borderColor = '#e5e7eb';
+                  e.currentTarget.style.transform = 'translateX(0)';
+                }
+              }}
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                padding: '1rem',
+                background: '#f9fafb',
+                borderRadius: '6px',
+                border: '1px solid #e5e7eb',
+                cursor: onSelectCustomer ? 'pointer' : 'default',
+                transition: 'background-color 0.15s ease, border-color 0.15s ease, transform 0.15s ease'
+              }}
+              title={onSelectCustomer ? (t.locale === 'pt-BR' ? 'Clique para ver detalhes do cliente' : 'Click to view customer details') : undefined}
+            >
               <div>
                 <div style={{ fontWeight: '600', color: '#1f2937', marginBottom: '0.25rem' }}>
                   {customer.latestAssessment?.teamName || customer.customerId}
@@ -9876,6 +10303,16 @@ function DashboardView({ kpis, customers, t }) {
                 }}>
                   {customer.avgScore.toFixed(2)}
                 </div>
+                {onSelectCustomer && (
+                  <div style={{
+                    fontSize: '1.125rem',
+                    color: '#9ca3af',
+                    marginLeft: '0.25rem',
+                    fontWeight: '300'
+                  }}>
+                    ›
+                  </div>
+                )}
               </div>
             </div>
           ))}
@@ -11396,16 +11833,88 @@ function CompareView({ customers, t }) {
 // - Qualifier and gating rules
 // Provides a download button to export as standalone HTML.
 // ============================================================================
-function AssessmentReportModal({ assessment, customer, onClose, t }) {
-  if (!assessment) return null;
+function AssessmentReportModal({ assessment: rawAssessment, customer, onClose, t }) {
+  if (!rawAssessment) return null;
+  
+  // Detect language from the t translations object for use inside this modal
+  const language = t.locale === 'pt-BR' ? 'pt' : 'en';
+  
+  // v36-fix3: If inputData is available, regenerate the assessment content in the
+  // current UI language. This is the same trick exportToHTML uses (v29).
+  // Without this, an assessment saved in PT would always display in PT,
+  // even when the user switches the UI to EN.
+  // Scores are preserved from the original to avoid floating-point surprises.
+  let assessment = rawAssessment;
+  if (rawAssessment.inputData) {
+    try {
+      const customerName = rawAssessment.teamName || rawAssessment.serviceName || customer?.customerId || null;
+      const regenerated = assessMaturity(rawAssessment.inputData, language, customerName);
+      assessment = {
+        ...rawAssessment,
+        // Preserve identity + numeric scores (avoid floating point drift)
+        finalLevel: rawAssessment.finalLevel,
+        rawScore: rawAssessment.rawScore,
+        // v36-fix4: qualifier and gatings ARE language-specific text strings,
+        // so they must come from the regenerated content, not from rawAssessment.
+        qualifier: regenerated.qualifier,
+        gatings: regenerated.gatings,
+        // Use freshly regenerated narrative content
+        dimensions: regenerated.dimensions,
+        dimensionsDetailed: {
+          adoption: {
+            score: rawAssessment.dimensionsDetailed?.adoption?.score ?? regenerated.dimensions.adoption.score,
+            level: regenerated.dimensions.adoption.level,
+            signals: regenerated.dimensions.adoption.signals || [],
+            issues: regenerated.dimensions.adoption.issues || [],
+            rationale: regenerated.dimensions.adoption.rationale || ''
+          },
+          governance: {
+            score: rawAssessment.dimensionsDetailed?.governance?.score ?? regenerated.dimensions.governance.score,
+            level: regenerated.dimensions.governance.level,
+            signals: regenerated.dimensions.governance.signals || [],
+            issues: regenerated.dimensions.governance.issues || [],
+            rationale: regenerated.dimensions.governance.rationale || ''
+          },
+          quality: {
+            score: rawAssessment.dimensionsDetailed?.quality?.score ?? regenerated.dimensions.quality.score,
+            level: regenerated.dimensions.quality.level,
+            signals: regenerated.dimensions.quality.signals || [],
+            issues: regenerated.dimensions.quality.issues || [],
+            rationale: regenerated.dimensions.quality.rationale || ''
+          },
+          alerting: {
+            score: rawAssessment.dimensionsDetailed?.alerting?.score ?? regenerated.dimensions.alerting.score,
+            level: regenerated.dimensions.alerting.level,
+            signals: regenerated.dimensions.alerting.signals || [],
+            issues: regenerated.dimensions.alerting.issues || [],
+            rationale: regenerated.dimensions.alerting.rationale || ''
+          },
+          cost: {
+            score: rawAssessment.dimensionsDetailed?.cost?.score ?? regenerated.dimensions.cost.score,
+            level: regenerated.dimensions.cost.level,
+            signals: regenerated.dimensions.cost.signals || [],
+            issues: regenerated.dimensions.cost.issues || [],
+            rationale: regenerated.dimensions.cost.rationale || ''
+          }
+        },
+        insights: regenerated.insights,
+        recommendations: regenerated.recommendations,
+        classifiedRecommendations: regenerated.classifiedRecommendations,
+        rationale: regenerated.rationale,
+        executiveSummary: regenerated.executiveSummary,
+        roadmap: regenerated.roadmap,
+        trainings: regenerated.trainings
+      };
+    } catch (e) {
+      console.warn('[AssessmentReportModal] Could not regenerate in current language, using stored content:', e);
+      assessment = rawAssessment;
+    }
+  }
   
   // Detect legacy assessments (saved before v3.2 - missing rich report data).
   const isLegacy = !assessment.dimensionsDetailed 
     || !assessment.recommendations 
     || !assessment.rationale;
-  
-  // Detect language from the t translations object for use inside this modal
-  const language = t.locale === 'pt-BR' ? 'pt' : 'en';
   
   // Helper: extract score from dimension (number or object)
   const getDimScore = (d) => {
@@ -11845,6 +12354,10 @@ function CustomerDetailModal({ customer, onClose, onDataChange, t }) {
   // State for viewing a specific assessment's report
   const [viewingReport, setViewingReport] = useState(null);
   
+  // v36: State for recalculate flow
+  // recalcPreview holds { assessmentToReplace, recalculatedAssessment, diff } for diff modal
+  const [recalcPreview, setRecalcPreview] = useState(null);
+  
   // Replacement for browser's blocked confirm() and alert():
   // - confirmDialog holds { title, message, confirmLabel, danger, onConfirm } or null
   // - notification holds { message, type } or null
@@ -11891,6 +12404,208 @@ function CustomerDetailModal({ customer, onClose, onDataChange, t }) {
   };
 
   const [editingAssessmentAccountId, setEditingAssessmentAccountId] = useState(null);
+  
+  // v36: Recalculate handlers
+  // computes a small diff between original and recalculated assessment
+  const computeRecalcDiff = (original, recalculated) => {
+    const diff = {
+      scoreChanges: [],
+      newFields: [],
+      changedFields: []
+    };
+    
+    // Score deltas (raw + each dimension)
+    const oldRaw = original.rawScore || 0;
+    const newRaw = recalculated.rawScore || 0;
+    if (Math.abs(oldRaw - newRaw) > 0.01) {
+      diff.scoreChanges.push({ key: 'rawScore', label: t.locale === 'pt-BR' ? 'Score geral' : 'Overall score', from: oldRaw, to: newRaw });
+    }
+    
+    const dims = ['adoption', 'governance', 'quality', 'alerting', 'cost'];
+    const dimLabels = {
+      adoption: t.locale === 'pt-BR' ? 'Adoção' : 'Adoption',
+      governance: t.locale === 'pt-BR' ? 'Governança' : 'Governance',
+      quality: t.locale === 'pt-BR' ? 'Qualidade' : 'Quality',
+      alerting: t.locale === 'pt-BR' ? 'Alertas' : 'Alerting',
+      cost: t.locale === 'pt-BR' ? 'Custo' : 'Cost'
+    };
+    dims.forEach(dim => {
+      const oldDim = original.dimensions?.[dim];
+      const newDim = recalculated.dimensions?.[dim];
+      const oldScore = typeof oldDim === 'object' ? oldDim?.score : oldDim;
+      const newScore = typeof newDim === 'object' ? newDim?.score : newDim;
+      if (typeof oldScore === 'number' && typeof newScore === 'number' && Math.abs(oldScore - newScore) > 0.01) {
+        diff.scoreChanges.push({ key: dim, label: dimLabels[dim], from: oldScore, to: newScore });
+      }
+    });
+    
+    // New fields added by newer logic versions
+    const newFieldsToCheck = [
+      { key: 'executiveSummary', label: t.locale === 'pt-BR' ? 'Resumo Executivo' : 'Executive Summary' },
+      { key: 'classifiedRecommendations', label: t.locale === 'pt-BR' ? 'Quick Wins + Iniciativas Estratégicas' : 'Quick Wins + Strategic Initiatives' }
+    ];
+    newFieldsToCheck.forEach(({ key, label }) => {
+      if (!original[key] && recalculated[key]) {
+        diff.newFields.push(label);
+      }
+    });
+    
+    // Number of recommendations escalated (v35)
+    const oldEscalated = (original.recommendations || []).filter(r => r.escalationReason).length;
+    const newEscalated = (recalculated.recommendations || []).filter(r => r.escalationReason).length;
+    if (oldEscalated !== newEscalated) {
+      diff.changedFields.push({
+        label: t.locale === 'pt-BR' ? 'Recomendações com severidade elevada' : 'Recommendations with escalated severity',
+        from: oldEscalated,
+        to: newEscalated
+      });
+    }
+    
+    // Number of risks (v31 added more)
+    const oldRisks = (original.insights?.risks || []).length;
+    const newRisks = (recalculated.insights?.risks || []).length;
+    if (oldRisks !== newRisks) {
+      diff.changedFields.push({
+        label: t.locale === 'pt-BR' ? 'Riscos identificados' : 'Identified risks',
+        from: oldRisks,
+        to: newRisks
+      });
+    }
+    
+    return diff;
+  };
+  
+  const handleStartRecalc = (assessment) => {
+    if (!assessment.inputData) {
+      showNotification(
+        t.locale === 'pt-BR' 
+          ? 'Este assessment não possui dados de entrada salvos. Recarregue os PDFs para recalcular.' 
+          : 'This assessment has no saved input data. Re-upload PDFs to recalculate.',
+        'error'
+      );
+      return;
+    }
+    
+    try {
+      // v36 fix: Use the CURRENT UI language, not the language the assessment was saved in.
+      // This ensures CSM recalculating from a PT-BR session gets PT-BR content,
+      // even if the original assessment was created with the UI in English.
+      const assessmentLang = t.locale === 'pt-BR' ? 'pt' : 'en';
+      const customerName = assessment.teamName || assessment.serviceName || customer.customerId;
+      const recalculated = assessMaturity(assessment.inputData, assessmentLang, customerName);
+      
+      // Build full recalculated assessment object preserving identity fields
+      const recalculatedAssessment = {
+        ...assessment,
+        // Update language stamp to reflect the new content language
+        assessmentLanguage: assessmentLang,
+        // Score & maturity (recalculated, NOT preserved)
+        finalLevel: recalculated.finalLevel,
+        rawScore: recalculated.rawScore,
+        qualifier: recalculated.qualifier,
+        gatings: recalculated.gatings,
+        // Dimensions & insights (recalculated)
+        dimensions: recalculated.dimensions,
+        // v36-fix2: ALSO regenerate dimensionsDetailed (used by report viewer)
+        // Without this, the saved signals/issues/rationale stay in the old language.
+        dimensionsDetailed: {
+          adoption: {
+            score: recalculated.dimensions.adoption.score,
+            level: recalculated.dimensions.adoption.level,
+            signals: recalculated.dimensions.adoption.signals || [],
+            issues: recalculated.dimensions.adoption.issues || [],
+            rationale: recalculated.dimensions.adoption.rationale || ''
+          },
+          governance: {
+            score: recalculated.dimensions.governance.score,
+            level: recalculated.dimensions.governance.level,
+            signals: recalculated.dimensions.governance.signals || [],
+            issues: recalculated.dimensions.governance.issues || [],
+            rationale: recalculated.dimensions.governance.rationale || ''
+          },
+          quality: {
+            score: recalculated.dimensions.quality.score,
+            level: recalculated.dimensions.quality.level,
+            signals: recalculated.dimensions.quality.signals || [],
+            issues: recalculated.dimensions.quality.issues || [],
+            rationale: recalculated.dimensions.quality.rationale || ''
+          },
+          alerting: {
+            score: recalculated.dimensions.alerting.score,
+            level: recalculated.dimensions.alerting.level,
+            signals: recalculated.dimensions.alerting.signals || [],
+            issues: recalculated.dimensions.alerting.issues || [],
+            rationale: recalculated.dimensions.alerting.rationale || ''
+          },
+          cost: {
+            score: recalculated.dimensions.cost.score,
+            level: recalculated.dimensions.cost.level,
+            signals: recalculated.dimensions.cost.signals || [],
+            issues: recalculated.dimensions.cost.issues || [],
+            rationale: recalculated.dimensions.cost.rationale || ''
+          }
+        },
+        insights: recalculated.insights,
+        // Recommendations (escalated)
+        recommendations: recalculated.recommendations,
+        classifiedRecommendations: recalculated.classifiedRecommendations,
+        // Narrative
+        rationale: recalculated.rationale,
+        executiveSummary: recalculated.executiveSummary,
+        roadmap: recalculated.roadmap,
+        trainings: recalculated.trainings,
+        // Update flag for tracking
+        recalculatedAt: new Date().toISOString(),
+        recalculatedFromVersion: assessment.recalculatedAt ? 'v-recalc' : 'v-original'
+      };
+      
+      const diff = computeRecalcDiff(assessment, recalculatedAssessment);
+      
+      setRecalcPreview({
+        assessmentToReplace: assessment,
+        recalculatedAssessment,
+        diff
+      });
+    } catch (e) {
+      console.error('Recalculation failed:', e);
+      showNotification(
+        t.locale === 'pt-BR' 
+          ? `Falha ao recalcular: ${e.message}` 
+          : `Recalculation failed: ${e.message}`,
+        'error'
+      );
+    }
+  };
+  
+  const handleConfirmRecalc = () => {
+    if (!recalcPreview) return;
+    
+    const { assessmentToReplace, recalculatedAssessment } = recalcPreview;
+    const accountId = assessmentToReplace.accountId || customer.customerId;
+    
+    try {
+      // addAssessmentToStorage updates in place when assessmentId matches
+      addAssessmentToStorage(accountId, recalculatedAssessment);
+      
+      setRecalcPreview(null);
+      showNotification(
+        t.locale === 'pt-BR' 
+          ? 'Assessment recalculado com sucesso!' 
+          : 'Assessment recalculated successfully!',
+        'success'
+      );
+      
+      if (onDataChange) onDataChange();
+    } catch (e) {
+      console.error('Save failed:', e);
+      showNotification(
+        t.locale === 'pt-BR' 
+          ? `Falha ao salvar: ${e.message}` 
+          : `Save failed: ${e.message}`,
+        'error'
+      );
+    }
+  };
 
   const handleStartEditAssessment = (assessment) => {
     setEditingAssessmentId(assessment.id || assessment.assessmentId);
@@ -12743,6 +13458,47 @@ function CustomerDetailModal({ customer, onClose, onDataChange, t }) {
                           >
                             <span style={{ pointerEvents: 'none', userSelect: 'none' }}>📄</span>
                           </button>
+                          {/* v36: Recalculate button — only if inputData is present */}
+                          {assessment.inputData && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                e.preventDefault();
+                                handleStartRecalc(assessment);
+                              }}
+                              style={{
+                                background: '#f5f3ff',
+                                color: '#632CA6',
+                                border: '1px solid #ddd6fe',
+                                width: '36px',
+                                height: '36px',
+                                borderRadius: '6px',
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                transition: 'all 0.2s',
+                                fontSize: '16px',
+                                padding: 0,
+                                lineHeight: 1,
+                                flexShrink: 0
+                              }}
+                              onMouseEnter={(e) => {
+                                e.currentTarget.style.background = '#ede9fe';
+                                e.currentTarget.style.borderColor = '#a78bfa';
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.background = '#f5f3ff';
+                                e.currentTarget.style.borderColor = '#ddd6fe';
+                              }}
+                              title={t.locale === 'pt-BR' 
+                                ? 'Recalcular com lógica atual' 
+                                : 'Recalculate with current logic'}
+                            >
+                              <span style={{ pointerEvents: 'none', userSelect: 'none' }}>🔄</span>
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={(e) => {
@@ -12810,6 +13566,183 @@ function CustomerDetailModal({ customer, onClose, onDataChange, t }) {
           onClose={() => setViewingReport(null)}
           t={t}
         />
+      )}
+      
+      {/* v36: Recalculate Diff Preview Modal */}
+      {recalcPreview && (
+        <div
+          onClick={() => setRecalcPreview(null)}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 100, padding: '2rem'
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: 'white', borderRadius: '12px', padding: '2rem',
+              maxWidth: '700px', width: '100%', maxHeight: '85vh',
+              overflowY: 'auto', boxShadow: '0 20px 50px rgba(0,0,0,0.3)'
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+              <span style={{ fontSize: '2rem' }}>🔄</span>
+              <h2 style={{ margin: 0, color: '#1f2937', fontSize: '1.5rem' }}>
+                {t.locale === 'pt-BR' ? 'Recalcular Assessment' : 'Recalculate Assessment'}
+              </h2>
+            </div>
+            <p style={{ color: '#4b5563', marginBottom: '1.5rem', fontSize: '0.9375rem' }}>
+              {t.locale === 'pt-BR' 
+                ? 'Pré-visualização das mudanças que serão aplicadas ao recalcular este assessment com a lógica atual.' 
+                : 'Preview of the changes that will be applied when recalculating this assessment with current logic.'}
+            </p>
+            
+            {/* Score Changes */}
+            {recalcPreview.diff.scoreChanges.length > 0 ? (
+              <div style={{ marginBottom: '1.5rem' }}>
+                <h3 style={{ margin: '0 0 0.75rem 0', fontSize: '1rem', color: '#1f2937' }}>
+                  📊 {t.locale === 'pt-BR' ? 'Alterações de Score' : 'Score Changes'}
+                </h3>
+                <div style={{ background: '#f9fafb', borderRadius: '8px', padding: '0.75rem' }}>
+                  {recalcPreview.diff.scoreChanges.map((change, idx) => {
+                    const delta = change.to - change.from;
+                    const arrow = delta > 0 ? '↑' : delta < 0 ? '↓' : '→';
+                    const color = delta > 0 ? '#059669' : delta < 0 ? '#dc2626' : '#6b7280';
+                    return (
+                      <div key={idx} style={{
+                        display: 'flex', justifyContent: 'space-between',
+                        padding: '0.375rem 0', borderBottom: idx < recalcPreview.diff.scoreChanges.length - 1 ? '1px solid #e5e7eb' : 'none',
+                        fontSize: '0.875rem'
+                      }}>
+                        <span style={{ color: '#4b5563' }}>{change.label}</span>
+                        <span>
+                          <span style={{ color: '#9ca3af' }}>{change.from.toFixed(2)}</span>
+                          {' '}<span style={{ color }}>{arrow}</span>{' '}
+                          <span style={{ color, fontWeight: 600 }}>{change.to.toFixed(2)}</span>
+                          {' '}<span style={{ color, fontSize: '0.75rem' }}>
+                            ({delta > 0 ? '+' : ''}{delta.toFixed(2)})
+                          </span>
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              <div style={{
+                background: '#f0fdf4', borderLeft: '3px solid #10b981',
+                padding: '0.75rem 1rem', borderRadius: '4px', marginBottom: '1.5rem',
+                fontSize: '0.875rem', color: '#065f46'
+              }}>
+                ✓ {t.locale === 'pt-BR' 
+                  ? 'Scores numéricos não mudam — apenas conteúdo narrativo será atualizado.'
+                  : 'Numerical scores will not change — only narrative content will be updated.'}
+              </div>
+            )}
+            
+            {/* New fields */}
+            {recalcPreview.diff.newFields.length > 0 && (
+              <div style={{ marginBottom: '1.5rem' }}>
+                <h3 style={{ margin: '0 0 0.75rem 0', fontSize: '1rem', color: '#1f2937' }}>
+                  ✨ {t.locale === 'pt-BR' ? 'Novas Seções' : 'New Sections'}
+                </h3>
+                <ul style={{ margin: 0, paddingLeft: '1.5rem', color: '#4b5563', fontSize: '0.875rem' }}>
+                  {recalcPreview.diff.newFields.map((field, idx) => (
+                    <li key={idx} style={{ padding: '0.25rem 0' }}>{field}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            
+            {/* Changed counts (escalations, risks) */}
+            {recalcPreview.diff.changedFields.length > 0 && (
+              <div style={{ marginBottom: '1.5rem' }}>
+                <h3 style={{ margin: '0 0 0.75rem 0', fontSize: '1rem', color: '#1f2937' }}>
+                  🔄 {t.locale === 'pt-BR' ? 'Conteúdo Atualizado' : 'Updated Content'}
+                </h3>
+                <div style={{ background: '#f9fafb', borderRadius: '8px', padding: '0.75rem' }}>
+                  {recalcPreview.diff.changedFields.map((change, idx) => (
+                    <div key={idx} style={{
+                      display: 'flex', justifyContent: 'space-between',
+                      padding: '0.375rem 0', borderBottom: idx < recalcPreview.diff.changedFields.length - 1 ? '1px solid #e5e7eb' : 'none',
+                      fontSize: '0.875rem'
+                    }}>
+                      <span style={{ color: '#4b5563' }}>{change.label}</span>
+                      <span>
+                        <span style={{ color: '#9ca3af' }}>{change.from}</span>
+                        {' → '}
+                        <span style={{ color: '#1f2937', fontWeight: 600 }}>{change.to}</span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            
+            {/* No changes case */}
+            {recalcPreview.diff.scoreChanges.length === 0 
+              && recalcPreview.diff.newFields.length === 0
+              && recalcPreview.diff.changedFields.length === 0 && (
+              <div style={{
+                background: '#f9fafb', padding: '1rem', borderRadius: '8px',
+                color: '#6b7280', fontSize: '0.875rem', marginBottom: '1.5rem',
+                textAlign: 'center'
+              }}>
+                {t.locale === 'pt-BR' 
+                  ? 'Nenhuma mudança detectada. O assessment já está atualizado.' 
+                  : 'No changes detected. Assessment is already up to date.'}
+              </div>
+            )}
+            
+            <div style={{ 
+              background: '#fef3c7', borderLeft: '3px solid #f59e0b',
+              padding: '0.75rem 1rem', borderRadius: '4px', marginBottom: '1.5rem',
+              fontSize: '0.8125rem', color: '#78350f'
+            }}>
+              ⚠️ {t.locale === 'pt-BR' 
+                ? 'Esta ação irá sobrescrever o assessment salvo. A data original e ID serão preservados.' 
+                : 'This action will overwrite the saved assessment. Original date and ID will be preserved.'}
+            </div>
+            
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+              <button
+                onClick={() => setRecalcPreview(null)}
+                style={{
+                  padding: '0.625rem 1.25rem', background: 'white',
+                  border: '1px solid #d1d5db', borderRadius: '6px',
+                  cursor: 'pointer', color: '#4b5563', fontSize: '0.875rem',
+                  fontWeight: 500
+                }}
+              >
+                {t.locale === 'pt-BR' ? 'Cancelar' : 'Cancel'}
+              </button>
+              <button
+                onClick={() => {
+                  setConfirmDialog({
+                    title: t.locale === 'pt-BR' ? 'Confirmar recálculo' : 'Confirm recalculation',
+                    message: t.locale === 'pt-BR' 
+                      ? 'Tem certeza que deseja sobrescrever o assessment com a versão recalculada?' 
+                      : 'Are you sure you want to overwrite the assessment with the recalculated version?',
+                    confirmLabel: t.locale === 'pt-BR' ? 'Sim, recalcular' : 'Yes, recalculate',
+                    cancelLabel: t.locale === 'pt-BR' ? 'Cancelar' : 'Cancel',
+                    onConfirm: () => {
+                      handleConfirmRecalc();
+                      setConfirmDialog(null);
+                    }
+                  });
+                }}
+                style={{
+                  padding: '0.625rem 1.25rem', background: '#632CA6',
+                  border: 'none', borderRadius: '6px', cursor: 'pointer',
+                  color: 'white', fontSize: '0.875rem', fontWeight: 500
+                }}
+              >
+                🔄 {t.locale === 'pt-BR' ? 'Aplicar Recálculo' : 'Apply Recalculation'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       
       {/* Confirm Dialog - replaces window.confirm() which is blocked in sandboxed iframes */}
