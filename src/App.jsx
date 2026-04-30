@@ -5234,6 +5234,14 @@ function exportToHTML(assessment, serviceName, teamName, businessOwner, technica
       <tbody>
         ${assessmentHistory.map((h, idx) => {
           const dateObj = new Date(h.date);
+          // v38-fix1: Same defensive read as EvolutionChart.dimScore() —
+          // some assessments store dimensions as numbers (legacy), others as objects (v3.2+).
+          const dScore = (d) => {
+            if (d === undefined || d === null) return 0;
+            if (typeof d === 'number') return d;
+            if (typeof d === 'object' && d.score !== undefined) return Number(d.score);
+            return 0;
+          };
           return `
           <tr style="${idx < assessmentHistory.length - 1 ? 'border-bottom: 1px solid #e5e7eb;' : ''}">
             <td style="padding: 0.75rem; font-size: 0.875rem; color: #4b5563;">
@@ -5245,11 +5253,11 @@ function exportToHTML(assessment, serviceName, teamName, businessOwner, technica
               </span>
             </td>
             <td style="padding: 0.75rem; text-align: center; font-weight: 600; color: #1f2937; font-size: 0.9375rem;">${h.rawScore.toFixed(2)}</td>
-            <td style="padding: 0.75rem; text-align: center; color: #4b5563; font-size: 0.875rem;">${h.dimensions.adoption.toFixed(1)}</td>
-            <td style="padding: 0.75rem; text-align: center; color: #4b5563; font-size: 0.875rem;">${h.dimensions.governance.toFixed(1)}</td>
-            <td style="padding: 0.75rem; text-align: center; color: #4b5563; font-size: 0.875rem;">${h.dimensions.quality.toFixed(1)}</td>
-            <td style="padding: 0.75rem; text-align: center; color: #4b5563; font-size: 0.875rem;">${h.dimensions.alerting.toFixed(1)}</td>
-            <td style="padding: 0.75rem; text-align: center; color: #4b5563; font-size: 0.875rem;">${h.dimensions.cost.toFixed(1)}</td>
+            <td style="padding: 0.75rem; text-align: center; color: #4b5563; font-size: 0.875rem;">${dScore(h.dimensions.adoption).toFixed(1)}</td>
+            <td style="padding: 0.75rem; text-align: center; color: #4b5563; font-size: 0.875rem;">${dScore(h.dimensions.governance).toFixed(1)}</td>
+            <td style="padding: 0.75rem; text-align: center; color: #4b5563; font-size: 0.875rem;">${dScore(h.dimensions.quality).toFixed(1)}</td>
+            <td style="padding: 0.75rem; text-align: center; color: #4b5563; font-size: 0.875rem;">${dScore(h.dimensions.alerting).toFixed(1)}</td>
+            <td style="padding: 0.75rem; text-align: center; color: #4b5563; font-size: 0.875rem;">${dScore(h.dimensions.cost).toFixed(1)}</td>
             <td style="padding: 0.75rem; font-size: 0.8125rem;">
               ${h.qualifier ? `
                 <div style="background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; padding: 0.5rem; border-radius: 4px; font-weight: 500; line-height: 1.4;">
@@ -7260,6 +7268,18 @@ function ObservabilityMaturityAssessment({ onBack, onNavigateToAdmin, initialLan
 const EvolutionChart = ({ history, currentAssessment, language }) => {
   const t = TRANSLATIONS[language];
   
+  // v38-fix1: Extract numeric score regardless of whether the dimension is
+  // a bare number (legacy assessments, pre-v3.2) or an object with `score`
+  // (v3.2+). Without this, charting a recent assessment crashes with
+  // React error #31 ("object with keys {score, signals, issues, level, rationale}
+  // is not valid as a React child") because Recharts tries to render it directly.
+  const dimScore = (d) => {
+    if (d === undefined || d === null) return 0;
+    if (typeof d === 'number') return d;
+    if (typeof d === 'object' && d.score !== undefined) return Number(d.score);
+    return 0;
+  };
+  
   if (!history || history.length === 0) {
     return (
       <div style={{
@@ -7279,11 +7299,11 @@ const EvolutionChart = ({ history, currentAssessment, language }) => {
   const evolutionData = [...history].reverse().map(h => ({
     date: new Date(h.date).toLocaleDateString(language === 'pt' ? 'pt-BR' : 'en-US', { month: 'short', year: 'numeric' }),
     overall: h.rawScore,
-    adoption: h.dimensions.adoption,
-    governance: h.dimensions.governance,
-    quality: h.dimensions.quality,
-    alerting: h.dimensions.alerting,
-    cost: h.dimensions.cost
+    adoption: dimScore(h.dimensions.adoption),
+    governance: dimScore(h.dimensions.governance),
+    quality: dimScore(h.dimensions.quality),
+    alerting: dimScore(h.dimensions.alerting),
+    cost: dimScore(h.dimensions.cost)
   }));
   
   // Add current if available
@@ -7291,11 +7311,11 @@ const EvolutionChart = ({ history, currentAssessment, language }) => {
     evolutionData.push({
       date: language === 'pt' ? 'Atual' : 'Current',
       overall: currentAssessment.rawScore,
-      adoption: currentAssessment.dimensions.adoption.score,
-      governance: currentAssessment.dimensions.governance.score,
-      quality: currentAssessment.dimensions.quality.score,
-      alerting: currentAssessment.dimensions.alerting.score,
-      cost: currentAssessment.dimensions.cost.score
+      adoption: dimScore(currentAssessment.dimensions.adoption),
+      governance: dimScore(currentAssessment.dimensions.governance),
+      quality: dimScore(currentAssessment.dimensions.quality),
+      alerting: dimScore(currentAssessment.dimensions.alerting),
+      cost: dimScore(currentAssessment.dimensions.cost)
     });
   }
   
@@ -10125,7 +10145,7 @@ function DatadogAdminConsole({ onBack, onNavigateToAssessment, initialLanguage }
       <div style={{ maxWidth: '1400px', margin: '0 auto', padding: '2rem' }}>
         {view === 'dashboard' && <DashboardView kpis={portfolioKPIs} customers={customerGroups} t={t} onSelectCustomer={setSelectedCustomer} />}
         {view === 'customers' && <CustomersView customers={customerGroups} onSelectCustomer={setSelectedCustomer} t={t} language={language} onDataChanged={loadAllAssessments} />}
-        {view === 'portfolio' && <PortfolioView customers={customerGroups} kpis={portfolioKPIs} t={t} />}
+        {view === 'portfolio' && <PortfolioView customers={customerGroups} kpis={portfolioKPIs} t={t} onSelectCustomer={setSelectedCustomer} />}
         {view === 'heatmap' && <HeatmapView customers={customerGroups} t={t} />}
         {view === 'compare' && <CompareView customers={customerGroups} t={t} />}
         {view === 'benchmarks' && <BenchmarksView assessments={allAssessments} customers={customerGroups} t={t} />}
@@ -10730,7 +10750,7 @@ function CustomerCard({ customer, onClick, t }) {
 }
 
 // Portfolio View (CSM View)
-function PortfolioView({ customers, kpis, t }) {
+function PortfolioView({ customers, kpis, t, onSelectCustomer }) {
   if (!kpis) return <div>{t.noData}</div>;
 
   return (
@@ -10763,12 +10783,28 @@ function PortfolioView({ customers, kpis, t }) {
           
           <div style={{ display: 'grid', gap: '0.75rem' }}>
             {customers.filter(c => c.trend < -0.1).map(customer => (
-              <div key={customer.customerId} style={{
-                background: 'white',
-                padding: '1rem',
-                borderRadius: '6px',
-                border: '1px solid #fecaca'
-              }}>
+              <div 
+                key={customer.customerId} 
+                onClick={() => onSelectCustomer && onSelectCustomer(customer)}
+                style={{
+                  background: 'white',
+                  padding: '1rem',
+                  borderRadius: '6px',
+                  border: '1px solid #fecaca',
+                  cursor: onSelectCustomer ? 'pointer' : 'default',
+                  transition: 'transform 0.1s, box-shadow 0.1s'
+                }}
+                onMouseEnter={(e) => {
+                  if (onSelectCustomer) {
+                    e.currentTarget.style.transform = 'translateY(-1px)';
+                    e.currentTarget.style.boxShadow = '0 4px 6px -1px rgba(220, 38, 38, 0.1)';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.transform = 'translateY(0)';
+                  e.currentTarget.style.boxShadow = 'none';
+                }}
+              >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <div>
                     <div style={{ fontWeight: '600', color: '#1f2937' }}>
@@ -10778,16 +10814,25 @@ function PortfolioView({ customers, kpis, t }) {
                       {t.scoreDecreasing}: {customer.trend.toFixed(2)} {t.lastPeriod}
                     </div>
                   </div>
-                  <button style={{
-                    background: '#dc2626',
-                    color: 'white',
-                    border: 'none',
-                    padding: '0.5rem 1rem',
-                    borderRadius: '6px',
-                    fontSize: '0.875rem',
-                    fontWeight: '600',
-                    cursor: 'pointer'
-                  }}>
+                  <button 
+                    onClick={(e) => {
+                      // v39: Stop propagation so the card's onClick doesn't double-fire.
+                      // Both the button and the card open the customer detail — clicking
+                      // the button explicitly is the user's intent, no need to bubble.
+                      e.stopPropagation();
+                      if (onSelectCustomer) onSelectCustomer(customer);
+                    }}
+                    style={{
+                      background: '#dc2626',
+                      color: 'white',
+                      border: 'none',
+                      padding: '0.5rem 1rem',
+                      borderRadius: '6px',
+                      fontSize: '0.875rem',
+                      fontWeight: '600',
+                      cursor: 'pointer'
+                    }}
+                  >
                     {t.createActionPlan}
                   </button>
                 </div>
@@ -12364,6 +12409,33 @@ function CustomerDetailModal({ customer, onClose, onDataChange, t }) {
   const [confirmDialog, setConfirmDialog] = useState(null);
   const [notification, setNotification] = useState(null);
   
+  // v38: Radar comparison — user picks any 2 assessments to overlay
+  // Defaults: most recent (atual) and second-most-recent (anterior).
+  // customer.assessments comes sorted newest-first.
+  const sortedAssessmentsForCompare = useMemo(() => {
+    return [...(customer.assessments || [])].sort(
+      (a, b) => new Date(b.date) - new Date(a.date)
+    );
+  }, [customer.assessments]);
+  
+  const getAssessmentId = (a) => {
+    // v38-fix2: Always return STRING. The id field can be a number (Date.now())
+    // or a Date object (legacy date fallback). When this value goes into a
+    // <select value={...}>, React serializes to string. The onChange returns
+    // e.target.value (string) — which then fails strict equality in find()
+    // against the original number/Date. Coercing to string everywhere fixes it.
+    const raw = a?.assessmentId || a?.id || a?.date;
+    if (raw === undefined || raw === null) return '';
+    return String(raw);
+  };
+  
+  const [compareCurrentId, setCompareCurrentId] = useState(() => 
+    sortedAssessmentsForCompare[0] ? getAssessmentId(sortedAssessmentsForCompare[0]) : null
+  );
+  const [comparePreviousId, setComparePreviousId] = useState(() => 
+    sortedAssessmentsForCompare[1] ? getAssessmentId(sortedAssessmentsForCompare[1]) : null
+  );
+  
   const showNotification = (message, type = 'info') => {
     setNotification({ message, type });
   };
@@ -12779,33 +12851,75 @@ function CustomerDetailModal({ customer, onClose, onDataChange, t }) {
     return 0;
   };
 
-  const radarData = latest?.dimensions ? [
-    { 
-      dimension: t.locale === 'pt-BR' ? 'Adoção' : 'Adoption',
-      score: getDimScore(latest.dimensions.adoption),
-      fullMark: 5
-    },
-    { 
-      dimension: t.locale === 'pt-BR' ? 'Governança' : 'Governance',
-      score: getDimScore(latest.dimensions.governance),
-      fullMark: 5
-    },
-    { 
-      dimension: t.locale === 'pt-BR' ? 'Qualidade' : 'Quality',
-      score: getDimScore(latest.dimensions.quality),
-      fullMark: 5
-    },
-    { 
-      dimension: t.locale === 'pt-BR' ? 'Alertas' : 'Alerting',
-      score: getDimScore(latest.dimensions.alerting),
-      fullMark: 5
-    },
-    { 
-      dimension: t.locale === 'pt-BR' ? 'Custo' : 'Cost',
-      score: getDimScore(latest.dimensions.cost),
-      fullMark: 5
-    }
-  ] : null;
+  // v38: Resolve the 2 assessments selected for radar comparison.
+  // Falls back to latest + previous when state is null (initial render or when
+  // user deletes an assessment that was selected).
+  const compareCurrent = useMemo(() => {
+    return sortedAssessmentsForCompare.find(a => getAssessmentId(a) === compareCurrentId) 
+      || sortedAssessmentsForCompare[0] 
+      || null;
+  }, [compareCurrentId, sortedAssessmentsForCompare]);
+  
+  const comparePrevious = useMemo(() => {
+    if (!comparePreviousId) return null;
+    return sortedAssessmentsForCompare.find(a => getAssessmentId(a) === comparePreviousId) || null;
+  }, [comparePreviousId, sortedAssessmentsForCompare]);
+  
+  // Should the comparison UI be available at all? Only if there are ≥2 assessments.
+  const canCompareAssessments = sortedAssessmentsForCompare.length >= 2;
+  
+  // v38: radar data — when 2 assessments are selected, build 2 series.
+  // When only 1 is available (or selected), keep the single-series legacy shape.
+  const radarData = useMemo(() => {
+    const baseAssessment = compareCurrent || latest;
+    if (!baseAssessment?.dimensions) return null;
+    
+    const dimDefs = [
+      { key: 'adoption',  label: t.locale === 'pt-BR' ? 'Adoção'      : 'Adoption' },
+      { key: 'governance',label: t.locale === 'pt-BR' ? 'Governança' : 'Governance' },
+      { key: 'quality',   label: t.locale === 'pt-BR' ? 'Qualidade'  : 'Quality' },
+      { key: 'alerting',  label: t.locale === 'pt-BR' ? 'Alertas'    : 'Alerting' },
+      { key: 'cost',      label: t.locale === 'pt-BR' ? 'Custo'      : 'Cost' }
+    ];
+    
+    return dimDefs.map(dim => {
+      const row = {
+        dimension: dim.label,
+        fullMark: 5,
+        // Backward-compatible single-series key
+        score: getDimScore(baseAssessment.dimensions[dim.key])
+      };
+      // When 2 assessments are selected, expose them under stable keys so the
+      // <Radar> components below can read them with dataKey="current"/"previous".
+      if (canCompareAssessments && comparePrevious && compareCurrent) {
+        row.current  = getDimScore(compareCurrent.dimensions[dim.key]);
+        row.previous = getDimScore(comparePrevious.dimensions[dim.key]);
+      }
+      return row;
+    });
+  }, [compareCurrent, comparePrevious, latest, t.locale, canCompareAssessments]);
+  
+  // v38: per-dimension delta summary (used in caption below radar)
+  const radarDeltas = useMemo(() => {
+    if (!canCompareAssessments || !comparePrevious || !compareCurrent) return null;
+    const dimDefs = [
+      { key: 'adoption',  label: t.locale === 'pt-BR' ? 'Adoção'      : 'Adoption' },
+      { key: 'governance',label: t.locale === 'pt-BR' ? 'Governança' : 'Governance' },
+      { key: 'quality',   label: t.locale === 'pt-BR' ? 'Qualidade'  : 'Quality' },
+      { key: 'alerting',  label: t.locale === 'pt-BR' ? 'Alertas'    : 'Alerting' },
+      { key: 'cost',      label: t.locale === 'pt-BR' ? 'Custo'      : 'Cost' }
+    ];
+    return dimDefs.map(dim => {
+      const cur  = getDimScore(compareCurrent.dimensions[dim.key]);
+      const prev = getDimScore(comparePrevious.dimensions[dim.key]);
+      return {
+        label: dim.label,
+        current: cur,
+        previous: prev,
+        delta: cur - prev
+      };
+    });
+  }, [compareCurrent, comparePrevious, t.locale, canCompareAssessments]);
 
   // Build evolution chart data from all assessments (sorted by date, oldest first)
   const evolutionData = [...customer.assessments]
@@ -13114,9 +13228,87 @@ function CustomerDetailModal({ customer, onClose, onDataChange, t }) {
                 borderRadius: '12px',
                 padding: '1.5rem'
               }}>
-                <h3 style={{ margin: '0 0 1rem 0', fontSize: '1rem', color: '#1f2937', fontWeight: '600' }}>
-                  {t.dimensionsTitle}
-                </h3>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                  <h3 style={{ margin: 0, fontSize: '1rem', color: '#1f2937', fontWeight: '600' }}>
+                    {canCompareAssessments && comparePrevious 
+                      ? (t.locale === 'pt-BR' ? 'Comparação entre Avaliações' : 'Assessment Comparison')
+                      : t.dimensionsTitle}
+                  </h3>
+                </div>
+                
+                {/* v38: Dropdowns to pick which 2 assessments to compare */}
+                {canCompareAssessments && (
+                  <div style={{ 
+                    display: 'grid', 
+                    gridTemplateColumns: '1fr 1fr', 
+                    gap: '0.75rem', 
+                    marginBottom: '1rem',
+                    fontSize: '0.8125rem'
+                  }}>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.6875rem', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: '600', marginBottom: '0.25rem' }}>
+                        <span style={{ display: 'inline-block', width: '10px', height: '10px', borderRadius: '2px', background: '#632CA6', marginRight: '0.375rem', verticalAlign: 'middle' }} />
+                        {t.locale === 'pt-BR' ? 'Atual' : 'Current'}
+                      </label>
+                      <select 
+                        value={compareCurrentId || ''} 
+                        onChange={(e) => setCompareCurrentId(e.target.value)}
+                        style={{
+                          width: '100%',
+                          padding: '0.4rem 0.5rem',
+                          border: '1px solid #d1d5db',
+                          borderRadius: '6px',
+                          fontSize: '0.8125rem',
+                          background: 'white',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        {sortedAssessmentsForCompare.map((a, idx) => {
+                          const aid = getAssessmentId(a);
+                          const dateLabel = new Date(a.date).toLocaleDateString(t.locale, { day: '2-digit', month: 'short', year: 'numeric' });
+                          const isPrevSelected = aid === comparePreviousId;
+                          return (
+                            <option key={aid} value={aid} disabled={isPrevSelected}>
+                              {idx === 0 ? '★ ' : ''}{dateLabel} — {t.locale === 'pt-BR' ? 'Nível' : 'Level'} {a.finalLevel}
+                            </option>
+                          );
+                        })}
+                      </select>
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.6875rem', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: '600', marginBottom: '0.25rem' }}>
+                        <span style={{ display: 'inline-block', width: '10px', height: '10px', borderRadius: '2px', background: '#0891b2', marginRight: '0.375rem', verticalAlign: 'middle' }} />
+                        {t.locale === 'pt-BR' ? 'Comparar com' : 'Compare with'}
+                      </label>
+                      <select 
+                        value={comparePreviousId || ''} 
+                        onChange={(e) => setComparePreviousId(e.target.value || null)}
+                        style={{
+                          width: '100%',
+                          padding: '0.4rem 0.5rem',
+                          border: '1px solid #d1d5db',
+                          borderRadius: '6px',
+                          fontSize: '0.8125rem',
+                          background: 'white',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        <option value="">{t.locale === 'pt-BR' ? 'Sem comparação' : 'No comparison'}</option>
+                        {sortedAssessmentsForCompare.map((a, idx) => {
+                          const aid = getAssessmentId(a);
+                          const dateLabel = new Date(a.date).toLocaleDateString(t.locale, { day: '2-digit', month: 'short', year: 'numeric' });
+                          const isCurSelected = aid === compareCurrentId;
+                          return (
+                            <option key={aid} value={aid} disabled={isCurSelected}>
+                              {idx === 0 ? '★ ' : ''}{dateLabel} — {t.locale === 'pt-BR' ? 'Nível' : 'Level'} {a.finalLevel}
+                            </option>
+                          );
+                        })}
+                      </select>
+                    </div>
+                  </div>
+                )}
+                
                 <ResponsiveContainer width="100%" height={280}>
                   <RadarChart data={radarData}>
                     <PolarGrid stroke="#e5e7eb" />
@@ -13129,14 +13321,41 @@ function CustomerDetailModal({ customer, onClose, onDataChange, t }) {
                       domain={[0, 5]} 
                       tick={{ fill: '#9ca3af', fontSize: 10 }}
                     />
-                    <Radar 
-                      name="Score" 
-                      dataKey="score" 
-                      stroke="#632CA6" 
-                      fill="#632CA6" 
-                      fillOpacity={0.4}
-                      strokeWidth={2}
-                    />
+                    {canCompareAssessments && comparePrevious ? (
+                      // v38: Two-series radar — overlay current and previous.
+                      // Use array (not fragment) — Recharts iterates children flatly,
+                      // so a Fragment may break legend/tooltip wiring on some versions.
+                      [
+                        <Radar 
+                          key="prev"
+                          name={t.locale === 'pt-BR' ? 'Anterior' : 'Previous'}
+                          dataKey="previous" 
+                          stroke="#0891b2" 
+                          fill="#0891b2" 
+                          fillOpacity={0.15}
+                          strokeWidth={2}
+                        />,
+                        <Radar 
+                          key="curr"
+                          name={t.locale === 'pt-BR' ? 'Atual' : 'Current'}
+                          dataKey="current" 
+                          stroke="#632CA6" 
+                          fill="#632CA6" 
+                          fillOpacity={0.4}
+                          strokeWidth={2}
+                        />
+                      ]
+                    ) : (
+                      // Single-series fallback (1 assessment only, or no comparison selected)
+                      <Radar 
+                        name="Score" 
+                        dataKey="score" 
+                        stroke="#632CA6" 
+                        fill="#632CA6" 
+                        fillOpacity={0.4}
+                        strokeWidth={2}
+                      />
+                    )}
                     <Tooltip 
                       contentStyle={{ 
                         background: 'white', 
@@ -13144,10 +13363,38 @@ function CustomerDetailModal({ customer, onClose, onDataChange, t }) {
                         borderRadius: '8px',
                         fontSize: '0.875rem'
                       }}
-                      formatter={(value) => [Number(value).toFixed(2), 'Score']}
+                      formatter={(value) => Number(value).toFixed(2)}
                     />
                   </RadarChart>
                 </ResponsiveContainer>
+                
+                {/* v38: Compact delta summary — one line per dimension with arrow */}
+                {radarDeltas && (
+                  <div style={{ 
+                    marginTop: '0.875rem', 
+                    paddingTop: '0.875rem', 
+                    borderTop: '1px solid #f3f4f6',
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(5, 1fr)',
+                    gap: '0.25rem',
+                    fontSize: '0.75rem'
+                  }}>
+                    {radarDeltas.map((d) => {
+                      const deltaColor = d.delta > 0.05 ? '#059669' : d.delta < -0.05 ? '#dc2626' : '#6b7280';
+                      const arrow = d.delta > 0.05 ? '↑' : d.delta < -0.05 ? '↓' : '→';
+                      return (
+                        <div key={d.label} style={{ textAlign: 'center' }}>
+                          <div style={{ color: '#9ca3af', fontSize: '0.6875rem', marginBottom: '0.125rem' }}>
+                            {d.label}
+                          </div>
+                          <div style={{ color: deltaColor, fontWeight: '600' }}>
+                            {arrow} {d.delta > 0 ? '+' : ''}{d.delta.toFixed(2)}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
 
