@@ -2405,6 +2405,340 @@ const PDF_DATA = {
   }
 };
 
+// ============================================================================
+// v40: Action Plan System
+// ============================================================================
+// Plano de ação por cliente, salvo em localStorage.
+// Schema completo: status + owner + dueDate + targetMetric + checkpoints + history
+// ============================================================================
+
+const ACTION_PLAN_STORAGE_PREFIX = 'datadog-action-plan-';
+
+const ACTION_PLAN_OWNERS = ['CSM', 'Customer Tech', 'Customer Business', 'Datadog TAM'];
+const ACTION_PLAN_STATUSES = ['pending', 'in-progress', 'blocked', 'done', 'cancelled'];
+const ACTION_PLAN_PRIORITIES = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
+
+function getActionPlanStorageKey(customerId) {
+  return `${ACTION_PLAN_STORAGE_PREFIX}${customerId}`;
+}
+
+// Load the plan for a customer. Returns null if none exists.
+function loadActionPlan(customerId) {
+  if (!customerId) return null;
+  try {
+    const raw = localStorage.getItem(getActionPlanStorageKey(customerId));
+    if (!raw) return null;
+    const plan = JSON.parse(raw);
+    return plan;
+  } catch (e) {
+    console.warn('[ActionPlan] Failed to load plan:', e);
+    return null;
+  }
+}
+
+// Save plan back to localStorage. Always updates lastUpdated.
+function saveActionPlan(customerId, plan) {
+  if (!customerId || !plan) return false;
+  try {
+    plan.lastUpdated = new Date().toISOString();
+    localStorage.setItem(getActionPlanStorageKey(customerId), JSON.stringify(plan));
+    return true;
+  } catch (e) {
+    console.error('[ActionPlan] Failed to save plan:', e);
+    return false;
+  }
+}
+
+// Generate a unique-ish ID for plan items / checkpoints / notes.
+function generatePlanItemId() {
+  return `item-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// Map a recommendation's dimension to a metric we can track.
+// This lets the auto-generated plan have meaningful target metrics
+// linked to actual fields the next assessment will populate.
+function getMetricForDimension(dim, data, lang) {
+  const isPt = lang === 'pt';
+  if (!data || !data.healthCheck) return null;
+  
+  const metricMap = {
+    alerting: data.healthCheck.monitorsMissingRecipients !== undefined ? {
+      name: 'monitorsMissingRecipients',
+      label: isPt ? 'Monitores sem destinatário' : 'Monitors without recipients',
+      currentValue: data.healthCheck.monitorsMissingRecipients,
+      targetValue: Math.max(10, Math.floor(data.healthCheck.monitorsMissingRecipients * 0.2)),
+      unit: isPt ? 'monitores' : 'monitors',
+      lowerIsBetter: true
+    } : null,
+    quality: data.healthCheck.percentageLogsCorrelated !== undefined ? {
+      name: 'percentageLogsCorrelated',
+      label: isPt ? 'Correlação logs-APM' : 'Logs-APM correlation',
+      currentValue: data.healthCheck.percentageLogsCorrelated,
+      targetValue: Math.max(70, data.healthCheck.percentageLogsCorrelated + 20),
+      unit: '%',
+      lowerIsBetter: false
+    } : null,
+    governance: data.healthCheck.hostsWithEnvTag !== undefined ? {
+      name: 'hostsWithEnvTag',
+      label: isPt ? 'Hosts com tag de env' : 'Hosts with env tag',
+      currentValue: data.healthCheck.hostsWithEnvTag,
+      targetValue: Math.min(99, data.healthCheck.hostsWithEnvTag + 15),
+      unit: '%',
+      lowerIsBetter: false
+    } : null,
+    adoption: data.platformUtilization?.totalActiveUsers !== undefined ? {
+      name: 'totalActiveUsers',
+      label: isPt ? 'Usuários ativos' : 'Active users',
+      currentValue: data.platformUtilization.totalActiveUsers,
+      targetValue: Math.floor(data.platformUtilization.totalActiveUsers * 1.3),
+      unit: isPt ? 'usuários' : 'users',
+      lowerIsBetter: false
+    } : null,
+    cost: data.healthCheck.logsExcludedByExclusion !== undefined ? {
+      name: 'logsExcludedByExclusion',
+      label: isPt ? 'Logs excluídos por filtros' : 'Logs excluded by filters',
+      currentValue: data.healthCheck.logsExcludedByExclusion,
+      targetValue: Math.min(80, Math.max(65, data.healthCheck.logsExcludedByExclusion + 20)),
+      unit: '%',
+      lowerIsBetter: false
+    } : null
+  };
+  
+  return metricMap[dim] || null;
+}
+
+// Generate suggested checkpoints based on the item's nature.
+// These are starting points — CSM edits freely.
+function generateCheckpointsForItem(dimension, lang) {
+  const isPt = lang === 'pt';
+  const checkpointsByDim = {
+    alerting: isPt ? [
+      'Inventariar monitores sem destinatário',
+      'Definir owners por domínio/serviço',
+      'Configurar recipients em monitores prioritários',
+      'Validar entregabilidade dos canais'
+    ] : [
+      'Inventory monitors without recipients',
+      'Define owners per domain/service',
+      'Configure recipients on priority monitors',
+      'Validate channel deliverability'
+    ],
+    quality: isPt ? [
+      'Mapear serviços com baixa correlação',
+      'Implementar trace_id propagation nos serviços críticos',
+      'Validar correlação no Datadog UI'
+    ] : [
+      'Map services with low correlation',
+      'Implement trace_id propagation in critical services',
+      'Validate correlation in Datadog UI'
+    ],
+    governance: isPt ? [
+      'Definir taxonomia de tags (env, service, version)',
+      'Aplicar tags via configuração de agent',
+      'Validar cobertura por host'
+    ] : [
+      'Define tag taxonomy (env, service, version)',
+      'Apply tags via agent configuration',
+      'Validate coverage per host'
+    ],
+    adoption: isPt ? [
+      'Identificar champions internos',
+      'Agendar treinamento Datadog Fundamentals',
+      'Criar dashboards customizados por time'
+    ] : [
+      'Identify internal champions',
+      'Schedule Datadog Fundamentals training',
+      'Create team-customized dashboards'
+    ],
+    cost: isPt ? [
+      'Analisar volume de logs por serviço',
+      'Configurar exclusion filters em logs sem valor',
+      'Documentar economia mensal'
+    ] : [
+      'Analyze log volume per service',
+      'Configure exclusion filters on low-value logs',
+      'Document monthly savings'
+    ]
+  };
+  
+  const titles = checkpointsByDim[dimension] || [];
+  return titles.map(title => ({
+    id: generatePlanItemId(),
+    title,
+    done: false,
+    completedAt: null
+  }));
+}
+
+// Generate the initial plan from an assessment's recommendations.
+// Picks the most critical items: classifiedRecommendations.criticalActions
+// + first phase actions of roadmap.
+function generateInitialActionPlan(customerId, assessment, data, lang) {
+  if (!assessment) return null;
+  const isPt = lang === 'pt';
+  const items = [];
+  
+  // Pull from classified recommendations (Quick Wins + Strategic)
+  const classified = assessment.classifiedRecommendations || {};
+  const dimScore = (d) => {
+    if (typeof d === 'number') return d;
+    if (d?.score !== undefined) return Number(d.score);
+    return 0;
+  };
+  
+  const dims = assessment.dimensions || {};
+  const dimToScore = {
+    adoption: dimScore(dims.adoption),
+    governance: dimScore(dims.governance),
+    quality: dimScore(dims.quality),
+    alerting: dimScore(dims.alerting),
+    cost: dimScore(dims.cost)
+  };
+  
+  // Helper: turn a recommendation into a plan item
+  const recToItem = (rec, category, defaultPriority) => {
+    if (!rec) return null;
+    const recDim = rec.dimension || rec.category || 'governance';
+    const targetMetric = getMetricForDimension(recDim, data, lang);
+    const checkpoints = generateCheckpointsForItem(recDim, lang);
+    
+    // Determine priority: if rec has explicit priority, use it.
+    // Otherwise CRITICAL if dim is critical (≤1.5), else HIGH.
+    let priority = rec.priority || defaultPriority;
+    if (!rec.priority && dimToScore[recDim] <= 1.5) priority = 'CRITICAL';
+    
+    return {
+      id: generatePlanItemId(),
+      title: rec.title || rec.action || rec.text || (isPt ? 'Ação sem título' : 'Untitled action'),
+      description: rec.description || rec.detail || rec.context || '',
+      dimension: recDim,
+      priority,
+      category,
+      status: 'pending',
+      owner: 'Customer Tech',
+      ownerName: '',
+      dueDate: null,
+      targetMetric,
+      checkpoints,
+      progressNotes: [],
+      autoGenerated: true,
+      sourceRecommendation: rec.id || null,
+      createdAt: new Date().toISOString()
+    };
+  };
+  
+  // 1. Critical actions first (highest priority)
+  if (Array.isArray(classified.criticalActions)) {
+    classified.criticalActions.slice(0, 3).forEach(rec => {
+      const item = recToItem(rec, 'critical', 'CRITICAL');
+      if (item) items.push(item);
+    });
+  }
+  
+  // 2. Quick wins (next priority)
+  if (Array.isArray(classified.quickWins)) {
+    classified.quickWins.slice(0, 3).forEach(rec => {
+      const item = recToItem(rec, 'quick-win', 'HIGH');
+      if (item) items.push(item);
+    });
+  }
+  
+  // 3. Strategic initiatives (longer term)
+  if (Array.isArray(classified.strategicInitiatives)) {
+    classified.strategicInitiatives.slice(0, 2).forEach(rec => {
+      const item = recToItem(rec, 'strategic', 'MEDIUM');
+      if (item) items.push(item);
+    });
+  }
+  
+  // Fallback: if no classified, use first roadmap phase actions
+  if (items.length === 0 && assessment.roadmap?.phases?.[0]?.actions) {
+    const firstPhase = assessment.roadmap.phases[0];
+    firstPhase.actions.slice(0, 5).forEach(action => {
+      const item = recToItem(
+        { title: action, dimension: firstPhase.dimensionFocus?.split('+')[0] || 'governance' },
+        'roadmap',
+        'HIGH'
+      );
+      if (item) items.push(item);
+    });
+  }
+  
+  return {
+    customerId,
+    createdAt: new Date().toISOString(),
+    lastUpdated: new Date().toISOString(),
+    generatedFromAssessment: assessment.assessmentId || assessment.id || null,
+    generatedFromAssessmentDate: assessment.date || null,
+    items
+  };
+}
+
+// Stats for the progress dashboard at the top of the action plan tab.
+function computeActionPlanStats(plan) {
+  if (!plan?.items?.length) {
+    return { total: 0, done: 0, inProgress: 0, pending: 0, blocked: 0, dueSoon: 0, percentComplete: 0 };
+  }
+  const items = plan.items;
+  const now = new Date();
+  const sevenDaysFromNow = new Date(now.getTime() + 7 * 86400000);
+  
+  const done = items.filter(i => i.status === 'done').length;
+  const inProgress = items.filter(i => i.status === 'in-progress').length;
+  const pending = items.filter(i => i.status === 'pending').length;
+  const blocked = items.filter(i => i.status === 'blocked').length;
+  const dueSoon = items.filter(i => {
+    if (i.status === 'done' || i.status === 'cancelled') return false;
+    if (!i.dueDate) return false;
+    const due = new Date(i.dueDate);
+    return due <= sevenDaysFromNow && due >= now;
+  }).length;
+  const overdue = items.filter(i => {
+    if (i.status === 'done' || i.status === 'cancelled') return false;
+    if (!i.dueDate) return false;
+    return new Date(i.dueDate) < now;
+  }).length;
+  
+  const total = items.length;
+  const percentComplete = total > 0 ? Math.round((done / total) * 100) : 0;
+  
+  return { total, done, inProgress, pending, blocked, dueSoon, overdue, percentComplete };
+}
+
+// Compute, for each plan item with a target metric, how much progress was
+// made when comparing the item's creation-time value to the latest assessment.
+// This gives the "plan vs actual" view: did the metric move toward the target?
+function computeMetricProgress(item, latestAssessmentData) {
+  if (!item?.targetMetric || !latestAssessmentData?.healthCheck) return null;
+  const m = item.targetMetric;
+  
+  // Read the current value from the latest assessment
+  let latestValue;
+  if (m.name === 'totalActiveUsers') {
+    latestValue = latestAssessmentData.platformUtilization?.totalActiveUsers;
+  } else {
+    latestValue = latestAssessmentData.healthCheck?.[m.name];
+  }
+  if (latestValue === undefined || latestValue === null) return null;
+  
+  const start = Number(m.currentValue);
+  const target = Number(m.targetValue);
+  const current = Number(latestValue);
+  
+  // Distance from start to target
+  const totalRange = Math.abs(target - start);
+  if (totalRange === 0) return { percentProgress: 100, current, start, target };
+  
+  // Distance traveled (signed by direction)
+  const distanceTraveled = m.lowerIsBetter
+    ? Math.max(0, start - current)
+    : Math.max(0, current - start);
+  
+  const percentProgress = Math.min(100, Math.max(0, Math.round((distanceTraveled / totalRange) * 100)));
+  
+  return { percentProgress, current, start, target, label: m.label, unit: m.unit };
+}
+
 // Scoring Engine
 function assessMaturity(data, lang, customerName = null) {
   // 1. Platform Adoption
@@ -9568,6 +9902,67 @@ const ADMIN_TRANSLATIONS = {
     scoreDecreasing: 'Score decrescente',
     lastPeriod: 'no último período',
     createActionPlan: 'Criar Plano de Ação',
+    // v40: Action Plan
+    actionPlanTab: 'Plano de Ação',
+    actionPlanTitle: 'Plano de Ação',
+    actionPlanGeneratedFrom: 'Gerado a partir da avaliação de',
+    actionPlanItemsCount: 'itens',
+    actionPlanNewItem: '+ Novo item',
+    actionPlanRegenerate: '↻ Regenerar do assessment',
+    actionPlanExport: 'Exportar',
+    actionPlanEmpty: 'Nenhum item no plano ainda.',
+    actionPlanGenerateFromAssessment: 'Gerar plano a partir do último assessment',
+    actionPlanCreateFromScratch: 'Criar plano em branco',
+    actionPlanDone: 'Concluído',
+    actionPlanInProgress: 'Em andamento',
+    actionPlanPending: 'Pendente',
+    actionPlanBlocked: 'Bloqueado',
+    actionPlanCancelled: 'Cancelado',
+    actionPlanDueSoon: 'Vencendo em breve',
+    actionPlanOverdue: 'Vencidos',
+    actionPlanFilterDimension: 'Todas as dimensões',
+    actionPlanFilterStatus: 'Todos os status',
+    actionPlanFilterOwner: 'Todos os owners',
+    actionPlanOwner: 'Owner',
+    actionPlanOwnerName: 'Nome',
+    actionPlanDueDate: 'Prazo',
+    actionPlanNoDueDate: 'Sem prazo',
+    actionPlanTargetMetric: 'Meta',
+    actionPlanCheckpoints: 'Checkpoints',
+    actionPlanProgressNotes: 'Notas de progresso',
+    actionPlanAddNote: 'Adicionar nota',
+    actionPlanAddCheckpoint: '+ Adicionar checkpoint',
+    actionPlanSave: 'Salvar',
+    actionPlanCancel: 'Cancelar',
+    actionPlanDelete: 'Excluir',
+    actionPlanEditItem: 'Editar item',
+    actionPlanNewItemTitle: 'Novo item do plano',
+    actionPlanItemTitle: 'Título',
+    actionPlanItemDescription: 'Descrição',
+    actionPlanItemPriority: 'Prioridade',
+    actionPlanItemDimension: 'Dimensão',
+    actionPlanItemStatus: 'Status',
+    actionPlanProgressTowardTarget: 'Progresso',
+    actionPlanRemaining: 'restante',
+    actionPlanConfirmDelete: 'Tem certeza que deseja excluir este item?',
+    actionPlanConfirmRegenerate: 'Isso vai substituir os itens auto-gerados existentes (manuais serão preservados). Continuar?',
+    actionPlanRegenerated: 'Plano regenerado a partir do assessment',
+    actionPlanItemSaved: 'Item salvo',
+    actionPlanItemDeleted: 'Item excluído',
+    actionPlanLastUpdated: 'Atualizado em',
+    actionPlanAutoGenerated: 'Auto-gerado',
+    actionPlanManual: 'Manual',
+    actionPlanCategoryCritical: 'Crítica',
+    actionPlanCategoryQuickWin: 'Quick Win',
+    actionPlanCategoryStrategic: 'Estratégica',
+    actionPlanCategoryRoadmap: 'Roadmap',
+    actionPlanDays: 'dias',
+    actionPlanDaysOverdue: 'dias atrasado',
+    actionPlanDaysToGo: 'dias',
+    actionPlanCompletedOn: 'Concluído em',
+    actionPlanFromValue: 'Inicial',
+    actionPlanToValue: 'Alvo',
+    actionPlanCurrentValue: 'Atual',
     topPerformers: '🏆 Top Performers',
     unitsAssessed: 'unidades avaliadas',
     // Benchmarks
@@ -9731,6 +10126,67 @@ const ADMIN_TRANSLATIONS = {
     scoreDecreasing: 'Decreasing score',
     lastPeriod: 'in the last period',
     createActionPlan: 'Create Action Plan',
+    // v40: Action Plan
+    actionPlanTab: 'Action Plan',
+    actionPlanTitle: 'Action Plan',
+    actionPlanGeneratedFrom: 'Generated from assessment of',
+    actionPlanItemsCount: 'items',
+    actionPlanNewItem: '+ New item',
+    actionPlanRegenerate: '↻ Regenerate from assessment',
+    actionPlanExport: 'Export',
+    actionPlanEmpty: 'No items in plan yet.',
+    actionPlanGenerateFromAssessment: 'Generate plan from latest assessment',
+    actionPlanCreateFromScratch: 'Create blank plan',
+    actionPlanDone: 'Done',
+    actionPlanInProgress: 'In Progress',
+    actionPlanPending: 'Pending',
+    actionPlanBlocked: 'Blocked',
+    actionPlanCancelled: 'Cancelled',
+    actionPlanDueSoon: 'Due soon',
+    actionPlanOverdue: 'Overdue',
+    actionPlanFilterDimension: 'All dimensions',
+    actionPlanFilterStatus: 'All statuses',
+    actionPlanFilterOwner: 'All owners',
+    actionPlanOwner: 'Owner',
+    actionPlanOwnerName: 'Name',
+    actionPlanDueDate: 'Due date',
+    actionPlanNoDueDate: 'No due date',
+    actionPlanTargetMetric: 'Target',
+    actionPlanCheckpoints: 'Checkpoints',
+    actionPlanProgressNotes: 'Progress notes',
+    actionPlanAddNote: 'Add note',
+    actionPlanAddCheckpoint: '+ Add checkpoint',
+    actionPlanSave: 'Save',
+    actionPlanCancel: 'Cancel',
+    actionPlanDelete: 'Delete',
+    actionPlanEditItem: 'Edit item',
+    actionPlanNewItemTitle: 'New plan item',
+    actionPlanItemTitle: 'Title',
+    actionPlanItemDescription: 'Description',
+    actionPlanItemPriority: 'Priority',
+    actionPlanItemDimension: 'Dimension',
+    actionPlanItemStatus: 'Status',
+    actionPlanProgressTowardTarget: 'Progress',
+    actionPlanRemaining: 'remaining',
+    actionPlanConfirmDelete: 'Are you sure you want to delete this item?',
+    actionPlanConfirmRegenerate: 'This will replace existing auto-generated items (manual ones will be preserved). Continue?',
+    actionPlanRegenerated: 'Plan regenerated from assessment',
+    actionPlanItemSaved: 'Item saved',
+    actionPlanItemDeleted: 'Item deleted',
+    actionPlanLastUpdated: 'Updated on',
+    actionPlanAutoGenerated: 'Auto-generated',
+    actionPlanManual: 'Manual',
+    actionPlanCategoryCritical: 'Critical',
+    actionPlanCategoryQuickWin: 'Quick Win',
+    actionPlanCategoryStrategic: 'Strategic',
+    actionPlanCategoryRoadmap: 'Roadmap',
+    actionPlanDays: 'days',
+    actionPlanDaysOverdue: 'days overdue',
+    actionPlanDaysToGo: 'days',
+    actionPlanCompletedOn: 'Completed on',
+    actionPlanFromValue: 'Start',
+    actionPlanToValue: 'Target',
+    actionPlanCurrentValue: 'Current',
     topPerformers: '🏆 Top Performers',
     unitsAssessed: 'units assessed',
     // Benchmarks
@@ -12384,9 +12840,1139 @@ function Notification({ message, type, onClose }) {
 }
 
 // Customer Detail Modal - Enhanced with radar chart, dimensions, and score evolution
+// ============================================================================
+// v40: ActionPlanTab — full action plan management UI
+// ============================================================================
+function ActionPlanTab({ customer, latestAssessment, t, showNotification }) {
+  const lang = t.locale === 'pt-BR' ? 'pt' : 'en';
+  const isPt = lang === 'pt';
+  const customerId = customer?.customerId;
+  
+  // The plan, loaded from localStorage. Null = no plan yet.
+  const [plan, setPlan] = useState(() => loadActionPlan(customerId));
+  
+  // Filters
+  const [filterDimension, setFilterDimension] = useState('all');
+  const [filterStatus, setFilterStatus] = useState('all');
+  const [filterOwner, setFilterOwner] = useState('all');
+  
+  // Edit modal state — null when closed, item object when open (could be new or existing)
+  const [editingItem, setEditingItem] = useState(null);
+  
+  // Confirm dialogs (kept simple — uses window.confirm)
+  // Reload plan from storage when customer changes
+  useEffect(() => {
+    setPlan(loadActionPlan(customerId));
+  }, [customerId]);
+  
+  // Persist any plan change immediately
+  const persistPlan = (nextPlan) => {
+    if (!nextPlan) return;
+    saveActionPlan(customerId, nextPlan);
+    setPlan(nextPlan);
+  };
+  
+  // === Plan creation / regeneration ===
+  
+  const handleGenerateInitialPlan = () => {
+    if (!latestAssessment) {
+      showNotification(isPt 
+        ? 'Sem assessment para gerar o plano' 
+        : 'No assessment available to generate plan', 'error');
+      return;
+    }
+    const data = latestAssessment.inputData || {
+      healthCheck: latestAssessment.healthCheck || {},
+      monitorQuality: latestAssessment.monitorQuality || {},
+      platformUtilization: latestAssessment.platformUtilization || {},
+      historicalMRR: latestAssessment.historicalMRR || {}
+    };
+    const newPlan = generateInitialActionPlan(customerId, latestAssessment, data, lang);
+    if (!newPlan || !newPlan.items.length) {
+      showNotification(isPt 
+        ? 'Não foi possível gerar itens do assessment' 
+        : 'Could not generate items from assessment', 'error');
+      return;
+    }
+    persistPlan(newPlan);
+    showNotification(t.actionPlanRegenerated, 'success');
+  };
+  
+  const handleCreateBlankPlan = () => {
+    const blank = {
+      customerId,
+      createdAt: new Date().toISOString(),
+      lastUpdated: new Date().toISOString(),
+      generatedFromAssessment: null,
+      generatedFromAssessmentDate: null,
+      items: []
+    };
+    persistPlan(blank);
+  };
+  
+  const handleRegenerate = () => {
+    if (!confirm(t.actionPlanConfirmRegenerate)) return;
+    if (!latestAssessment || !plan) {
+      handleGenerateInitialPlan();
+      return;
+    }
+    // Preserve manually-created items (autoGenerated === false)
+    const manualItems = plan.items.filter(i => !i.autoGenerated);
+    const data = latestAssessment.inputData || {
+      healthCheck: latestAssessment.healthCheck || {},
+      monitorQuality: latestAssessment.monitorQuality || {},
+      platformUtilization: latestAssessment.platformUtilization || {},
+      historicalMRR: latestAssessment.historicalMRR || {}
+    };
+    const fresh = generateInitialActionPlan(customerId, latestAssessment, data, lang);
+    if (!fresh) return;
+    const merged = {
+      ...plan,
+      items: [...fresh.items, ...manualItems],
+      lastUpdated: new Date().toISOString(),
+      generatedFromAssessment: latestAssessment.assessmentId || latestAssessment.id || null,
+      generatedFromAssessmentDate: latestAssessment.date || null
+    };
+    persistPlan(merged);
+    showNotification(t.actionPlanRegenerated, 'success');
+  };
+  
+  // === Item CRUD ===
+  
+  const handleSaveItem = (item) => {
+    if (!plan) return;
+    const exists = plan.items.find(i => i.id === item.id);
+    let nextItems;
+    if (exists) {
+      nextItems = plan.items.map(i => i.id === item.id ? item : i);
+    } else {
+      nextItems = [...plan.items, item];
+    }
+    persistPlan({ ...plan, items: nextItems });
+    setEditingItem(null);
+    showNotification(t.actionPlanItemSaved, 'success');
+  };
+  
+  const handleDeleteItem = (itemId) => {
+    if (!plan) return;
+    if (!confirm(t.actionPlanConfirmDelete)) return;
+    const nextItems = plan.items.filter(i => i.id !== itemId);
+    persistPlan({ ...plan, items: nextItems });
+    showNotification(t.actionPlanItemDeleted, 'success');
+  };
+  
+  const handleQuickStatusChange = (itemId, newStatus) => {
+    if (!plan) return;
+    const nextItems = plan.items.map(i => 
+      i.id === itemId ? { ...i, status: newStatus } : i
+    );
+    persistPlan({ ...plan, items: nextItems });
+  };
+  
+  const handleToggleCheckpoint = (itemId, checkpointId) => {
+    if (!plan) return;
+    const nextItems = plan.items.map(i => {
+      if (i.id !== itemId) return i;
+      return {
+        ...i,
+        checkpoints: (i.checkpoints || []).map(cp => 
+          cp.id === checkpointId 
+            ? { ...cp, done: !cp.done, completedAt: !cp.done ? new Date().toISOString() : null } 
+            : cp
+        )
+      };
+    });
+    persistPlan({ ...plan, items: nextItems });
+  };
+  
+  // === Export ===
+  
+  const handleExport = () => {
+    if (!plan?.items?.length) return;
+    const lines = [];
+    lines.push(`# ${customer.latestAssessment?.teamName || customer.customerId} - ${t.actionPlanTitle}`);
+    lines.push('');
+    lines.push(`*${t.actionPlanLastUpdated}: ${new Date(plan.lastUpdated).toLocaleString(t.locale)}*`);
+    lines.push('');
+    plan.items.forEach((item, idx) => {
+      const statusEmoji = {
+        done: '✅', 'in-progress': '🟡', pending: '⚪', blocked: '🔴', cancelled: '⚫'
+      }[item.status] || '⚪';
+      lines.push(`## ${idx + 1}. ${statusEmoji} ${item.title}`);
+      lines.push('');
+      if (item.description) lines.push(`${item.description}\n`);
+      lines.push(`- **${t.actionPlanItemPriority}:** ${item.priority}`);
+      lines.push(`- **${t.actionPlanItemDimension}:** ${item.dimension}`);
+      lines.push(`- **${t.actionPlanOwner}:** ${item.owner}${item.ownerName ? ` (${item.ownerName})` : ''}`);
+      if (item.dueDate) lines.push(`- **${t.actionPlanDueDate}:** ${new Date(item.dueDate).toLocaleDateString(t.locale)}`);
+      if (item.targetMetric) {
+        lines.push(`- **${t.actionPlanTargetMetric}:** ${item.targetMetric.label} ${item.targetMetric.currentValue} → ${item.targetMetric.targetValue} ${item.targetMetric.unit}`);
+      }
+      if (item.checkpoints?.length) {
+        lines.push(`- **${t.actionPlanCheckpoints}:**`);
+        item.checkpoints.forEach(cp => {
+          lines.push(`  - [${cp.done ? 'x' : ' '}] ${cp.title}`);
+        });
+      }
+      if (item.progressNotes?.length) {
+        lines.push(`- **${t.actionPlanProgressNotes}:**`);
+        item.progressNotes.forEach(n => {
+          lines.push(`  - *${new Date(n.timestamp).toLocaleString(t.locale)}:* ${n.note}`);
+        });
+      }
+      lines.push('');
+    });
+    const md = lines.join('\n');
+    const blob = new Blob([md], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const safeName = (customer.latestAssessment?.teamName || customer.customerId)
+      .replace(/[^a-z0-9]/gi, '_').toLowerCase();
+    a.download = `action-plan-${safeName}-${new Date().toISOString().slice(0, 10)}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+  
+  // === Filters applied ===
+  
+  const filteredItems = useMemo(() => {
+    if (!plan?.items) return [];
+    return plan.items.filter(item => {
+      if (filterDimension !== 'all' && item.dimension !== filterDimension) return false;
+      if (filterStatus !== 'all' && item.status !== filterStatus) return false;
+      if (filterOwner !== 'all' && item.owner !== filterOwner) return false;
+      return true;
+    });
+  }, [plan, filterDimension, filterStatus, filterOwner]);
+  
+  // === Stats ===
+  
+  const stats = useMemo(() => computeActionPlanStats(plan), [plan]);
+  
+  // === Latest assessment data for metric progress ===
+  
+  const latestData = useMemo(() => {
+    if (!latestAssessment) return null;
+    return latestAssessment.inputData || {
+      healthCheck: latestAssessment.healthCheck || {},
+      platformUtilization: latestAssessment.platformUtilization || {}
+    };
+  }, [latestAssessment]);
+  
+  // ====================================================================
+  // EMPTY STATE: no plan yet
+  // ====================================================================
+  if (!plan) {
+    return (
+      <div style={{
+        background: 'white',
+        border: '1px solid #e5e7eb',
+        borderRadius: '12px',
+        padding: '3rem 2rem',
+        textAlign: 'center'
+      }}>
+        <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>📋</div>
+        <h3 style={{ margin: '0 0 0.5rem 0', color: '#1f2937', fontSize: '1.25rem' }}>
+          {t.actionPlanTitle}
+        </h3>
+        <p style={{ color: '#6b7280', marginBottom: '1.5rem', maxWidth: '480px', margin: '0 auto 1.5rem' }}>
+          {isPt 
+            ? 'Crie um plano de ação para acompanhar as próximas ações de melhoria com este cliente. Você pode gerar um plano sugerido a partir do último assessment, ou começar do zero.'
+            : 'Create an action plan to track the next improvement steps for this customer. You can generate a suggested plan from the latest assessment, or start from scratch.'}
+        </p>
+        <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+          {latestAssessment && (
+            <button
+              onClick={handleGenerateInitialPlan}
+              style={{
+                background: '#632CA6',
+                color: 'white',
+                border: 'none',
+                padding: '0.625rem 1.25rem',
+                borderRadius: '6px',
+                fontSize: '0.9375rem',
+                fontWeight: '600',
+                cursor: 'pointer'
+              }}
+            >
+              ✨ {t.actionPlanGenerateFromAssessment}
+            </button>
+          )}
+          <button
+            onClick={handleCreateBlankPlan}
+            style={{
+              background: 'white',
+              color: '#632CA6',
+              border: '1px solid #632CA6',
+              padding: '0.625rem 1.25rem',
+              borderRadius: '6px',
+              fontSize: '0.9375rem',
+              fontWeight: '600',
+              cursor: 'pointer'
+            }}
+          >
+            {t.actionPlanCreateFromScratch}
+          </button>
+        </div>
+      </div>
+    );
+  }
+  
+  // ====================================================================
+  // PLAN STATE: has plan (may be empty items list)
+  // ====================================================================
+  return (
+    <div>
+      {/* Header */}
+      <div style={{
+        background: 'white',
+        border: '1px solid #e5e7eb',
+        borderRadius: '12px',
+        padding: '1.25rem',
+        marginBottom: '1rem'
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+          <div>
+            <div style={{ fontSize: '1.125rem', fontWeight: '600', color: '#1f2937', marginBottom: '0.25rem' }}>
+              {t.actionPlanTitle}
+            </div>
+            <div style={{ fontSize: '0.8125rem', color: '#6b7280' }}>
+              {plan.generatedFromAssessmentDate && (
+                <>{t.actionPlanGeneratedFrom} {new Date(plan.generatedFromAssessmentDate).toLocaleDateString(t.locale)} • </>
+              )}
+              {plan.items.length} {t.actionPlanItemsCount}
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <button
+              onClick={() => setEditingItem({
+                id: generatePlanItemId(),
+                title: '',
+                description: '',
+                dimension: 'governance',
+                priority: 'MEDIUM',
+                category: 'manual',
+                status: 'pending',
+                owner: 'Customer Tech',
+                ownerName: '',
+                dueDate: null,
+                targetMetric: null,
+                checkpoints: [],
+                progressNotes: [],
+                autoGenerated: false,
+                createdAt: new Date().toISOString(),
+                _isNew: true
+              })}
+              style={{
+                background: '#632CA6', color: 'white', border: 'none',
+                padding: '0.5rem 0.875rem', borderRadius: '6px',
+                fontSize: '0.8125rem', fontWeight: '600', cursor: 'pointer'
+              }}
+            >
+              {t.actionPlanNewItem}
+            </button>
+            {latestAssessment && (
+              <button
+                onClick={handleRegenerate}
+                style={{
+                  background: 'white', color: '#632CA6', border: '1px solid #632CA6',
+                  padding: '0.5rem 0.875rem', borderRadius: '6px',
+                  fontSize: '0.8125rem', fontWeight: '600', cursor: 'pointer'
+                }}
+                title={t.actionPlanRegenerate}
+              >
+                ↻
+              </button>
+            )}
+            {plan.items.length > 0 && (
+              <button
+                onClick={handleExport}
+                style={{
+                  background: 'white', color: '#374151', border: '1px solid #d1d5db',
+                  padding: '0.5rem 0.875rem', borderRadius: '6px',
+                  fontSize: '0.8125rem', fontWeight: '600', cursor: 'pointer'
+                }}
+              >
+                {t.actionPlanExport}
+              </button>
+            )}
+          </div>
+        </div>
+        
+        {/* Progress summary */}
+        <div style={{
+          background: '#f9fafb',
+          borderRadius: '8px',
+          padding: '0.75rem',
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
+          gap: '0.75rem'
+        }}>
+          <ActionPlanStatCard label={t.actionPlanDone} value={stats.done} total={stats.total} color="#059669" />
+          <ActionPlanStatCard label={t.actionPlanInProgress} value={stats.inProgress} color="#f59e0b" />
+          <ActionPlanStatCard label={t.actionPlanPending} value={stats.pending} color="#6b7280" />
+          {stats.dueSoon > 0 && (
+            <ActionPlanStatCard label={t.actionPlanDueSoon} value={stats.dueSoon} color="#dc2626" />
+          )}
+          {stats.overdue > 0 && (
+            <ActionPlanStatCard label={t.actionPlanOverdue} value={stats.overdue} color="#dc2626" />
+          )}
+        </div>
+      </div>
+      
+      {/* Filters */}
+      {plan.items.length > 0 && (
+        <div style={{
+          display: 'flex',
+          gap: '0.5rem',
+          marginBottom: '1rem',
+          flexWrap: 'wrap'
+        }}>
+          <select
+            value={filterDimension}
+            onChange={(e) => setFilterDimension(e.target.value)}
+            style={{ padding: '0.375rem 0.5rem', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.8125rem' }}
+          >
+            <option value="all">{t.actionPlanFilterDimension}</option>
+            <option value="adoption">{isPt ? 'Adoção' : 'Adoption'}</option>
+            <option value="governance">{isPt ? 'Governança' : 'Governance'}</option>
+            <option value="quality">{isPt ? 'Qualidade' : 'Quality'}</option>
+            <option value="alerting">{isPt ? 'Alertas' : 'Alerting'}</option>
+            <option value="cost">{isPt ? 'Custo' : 'Cost'}</option>
+          </select>
+          <select
+            value={filterStatus}
+            onChange={(e) => setFilterStatus(e.target.value)}
+            style={{ padding: '0.375rem 0.5rem', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.8125rem' }}
+          >
+            <option value="all">{t.actionPlanFilterStatus}</option>
+            <option value="pending">{t.actionPlanPending}</option>
+            <option value="in-progress">{t.actionPlanInProgress}</option>
+            <option value="blocked">{t.actionPlanBlocked}</option>
+            <option value="done">{t.actionPlanDone}</option>
+            <option value="cancelled">{t.actionPlanCancelled}</option>
+          </select>
+          <select
+            value={filterOwner}
+            onChange={(e) => setFilterOwner(e.target.value)}
+            style={{ padding: '0.375rem 0.5rem', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.8125rem' }}
+          >
+            <option value="all">{t.actionPlanFilterOwner}</option>
+            {ACTION_PLAN_OWNERS.map(o => <option key={o} value={o}>{o}</option>)}
+          </select>
+        </div>
+      )}
+      
+      {/* Items list */}
+      {plan.items.length === 0 ? (
+        <div style={{
+          background: '#f9fafb',
+          border: '1px dashed #d1d5db',
+          borderRadius: '12px',
+          padding: '2rem',
+          textAlign: 'center',
+          color: '#6b7280'
+        }}>
+          {t.actionPlanEmpty}
+          {latestAssessment && (
+            <div style={{ marginTop: '1rem' }}>
+              <button
+                onClick={handleGenerateInitialPlan}
+                style={{
+                  background: '#632CA6', color: 'white', border: 'none',
+                  padding: '0.5rem 1rem', borderRadius: '6px',
+                  fontSize: '0.875rem', fontWeight: '600', cursor: 'pointer'
+                }}
+              >
+                ✨ {t.actionPlanGenerateFromAssessment}
+              </button>
+            </div>
+          )}
+        </div>
+      ) : filteredItems.length === 0 ? (
+        <div style={{
+          background: '#f9fafb',
+          border: '1px solid #e5e7eb',
+          borderRadius: '12px',
+          padding: '1.5rem',
+          textAlign: 'center',
+          color: '#6b7280',
+          fontSize: '0.875rem'
+        }}>
+          {isPt ? 'Nenhum item corresponde aos filtros' : 'No items match the filters'}
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+          {filteredItems.map(item => (
+            <ActionPlanItemCard
+              key={item.id}
+              item={item}
+              t={t}
+              latestData={latestData}
+              onEdit={() => setEditingItem(item)}
+              onDelete={() => handleDeleteItem(item.id)}
+              onStatusChange={(s) => handleQuickStatusChange(item.id, s)}
+              onToggleCheckpoint={(cpId) => handleToggleCheckpoint(item.id, cpId)}
+            />
+          ))}
+        </div>
+      )}
+      
+      {/* Edit modal */}
+      {editingItem && (
+        <ActionPlanItemEditor
+          item={editingItem}
+          t={t}
+          isPt={isPt}
+          latestData={latestData}
+          onSave={handleSaveItem}
+          onCancel={() => setEditingItem(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Small stat card used in the action plan summary
+function ActionPlanStatCard({ label, value, total, color }) {
+  return (
+    <div>
+      <div style={{ 
+        fontSize: '0.6875rem', 
+        color: '#6b7280', 
+        textTransform: 'uppercase', 
+        letterSpacing: '0.05em', 
+        fontWeight: '600' 
+      }}>
+        {label}
+      </div>
+      <div style={{ fontSize: '1.5rem', fontWeight: '700', color, marginTop: '0.125rem' }}>
+        {value}{total !== undefined ? ` / ${total}` : ''}
+      </div>
+    </div>
+  );
+}
+
+// Single item card with status, meta, checkpoints, target metric progress
+function ActionPlanItemCard({ item, t, latestData, onEdit, onDelete, onStatusChange, onToggleCheckpoint }) {
+  const isPt = t.locale === 'pt-BR';
+  
+  // Color rails by priority
+  const priorityColor = {
+    CRITICAL: '#dc2626',
+    HIGH: '#f59e0b',
+    MEDIUM: '#3b82f6',
+    LOW: '#6b7280'
+  }[item.priority] || '#6b7280';
+  
+  const isDone = item.status === 'done';
+  
+  // Status badge color
+  const statusBadge = {
+    pending: { bg: '#f3f4f6', text: '#6b7280', label: t.actionPlanPending },
+    'in-progress': { bg: '#fef3c7', text: '#92400e', label: t.actionPlanInProgress },
+    blocked: { bg: '#fee2e2', text: '#991b1b', label: t.actionPlanBlocked },
+    done: { bg: '#d1fae5', text: '#065f46', label: t.actionPlanDone },
+    cancelled: { bg: '#e5e7eb', text: '#374151', label: t.actionPlanCancelled }
+  }[item.status] || { bg: '#f3f4f6', text: '#6b7280', label: item.status };
+  
+  // Dimension chip color
+  const dimChip = {
+    adoption: { bg: '#f3e8ff', text: '#6b21a8', label: isPt ? 'Adoção' : 'Adoption' },
+    governance: { bg: '#dbeafe', text: '#1e40af', label: isPt ? 'Governança' : 'Governance' },
+    quality: { bg: '#e0f2fe', text: '#075985', label: isPt ? 'Qualidade' : 'Quality' },
+    alerting: { bg: '#fee2e2', text: '#991b1b', label: isPt ? 'Alertas' : 'Alerting' },
+    cost: { bg: '#fef3c7', text: '#92400e', label: isPt ? 'Custo' : 'Cost' }
+  }[item.dimension] || { bg: '#f3f4f6', text: '#374151', label: item.dimension };
+  
+  // Due date computation
+  let dueLabel = null;
+  let dueColor = '#6b7280';
+  if (item.dueDate) {
+    const due = new Date(item.dueDate);
+    const now = new Date();
+    const days = Math.ceil((due - now) / 86400000);
+    if (days < 0) {
+      dueLabel = `${Math.abs(days)} ${t.actionPlanDaysOverdue}`;
+      dueColor = '#dc2626';
+    } else if (days <= 7) {
+      dueLabel = `${due.toLocaleDateString(t.locale, { day: '2-digit', month: 'short' })} (${days} ${t.actionPlanDaysToGo})`;
+      dueColor = '#dc2626';
+    } else if (days <= 30) {
+      dueLabel = `${due.toLocaleDateString(t.locale, { day: '2-digit', month: 'short' })} (${days} ${t.actionPlanDaysToGo})`;
+      dueColor = '#f59e0b';
+    } else {
+      dueLabel = due.toLocaleDateString(t.locale, { day: '2-digit', month: 'short', year: 'numeric' });
+    }
+  }
+  
+  // Target metric progress
+  const metricProgress = computeMetricProgress(item, latestData);
+  
+  // Checkpoint stats
+  const cpDone = (item.checkpoints || []).filter(c => c.done).length;
+  const cpTotal = (item.checkpoints || []).length;
+  
+  return (
+    <div style={{
+      background: isDone ? '#fafafa' : 'white',
+      border: '1px solid #e5e7eb',
+      borderLeft: `3px solid ${priorityColor}`,
+      borderRadius: '8px',
+      padding: '0.875rem 1rem',
+      opacity: isDone ? 0.75 : 1
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.5rem' }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {/* Badges row */}
+          <div style={{ display: 'flex', gap: '0.375rem', marginBottom: '0.375rem', flexWrap: 'wrap' }}>
+            <span style={{
+              background: priorityColor, color: 'white',
+              fontSize: '0.625rem', padding: '0.125rem 0.4rem',
+              borderRadius: '3px', fontWeight: '700'
+            }}>
+              {item.priority}
+            </span>
+            <span style={{
+              background: dimChip.bg, color: dimChip.text,
+              fontSize: '0.625rem', padding: '0.125rem 0.4rem',
+              borderRadius: '3px', fontWeight: '600'
+            }}>
+              {dimChip.label}
+            </span>
+            <span style={{
+              background: statusBadge.bg, color: statusBadge.text,
+              fontSize: '0.625rem', padding: '0.125rem 0.4rem',
+              borderRadius: '3px', fontWeight: '600'
+            }}>
+              {statusBadge.label}
+            </span>
+            {item.autoGenerated && (
+              <span style={{
+                background: '#f5f3ff', color: '#6b21a8',
+                fontSize: '0.625rem', padding: '0.125rem 0.4rem',
+                borderRadius: '3px'
+              }}>
+                ✨ {t.actionPlanAutoGenerated}
+              </span>
+            )}
+          </div>
+          
+          {/* Title */}
+          <div style={{ 
+            fontSize: '0.9375rem', 
+            fontWeight: '600', 
+            color: '#1f2937', 
+            textDecoration: isDone ? 'line-through' : 'none',
+            marginBottom: '0.25rem'
+          }}>
+            {item.title}
+          </div>
+          
+          {/* Description */}
+          {item.description && (
+            <div style={{ fontSize: '0.8125rem', color: '#6b7280', marginBottom: '0.5rem' }}>
+              {item.description}
+            </div>
+          )}
+          
+          {/* Meta row */}
+          <div style={{ display: 'flex', gap: '1rem', fontSize: '0.75rem', color: '#6b7280', flexWrap: 'wrap', marginTop: '0.25rem' }}>
+            <span>
+              <strong style={{ color: '#374151', fontWeight: '600' }}>{t.actionPlanOwner}:</strong>{' '}
+              {item.owner}{item.ownerName ? ` (${item.ownerName})` : ''}
+            </span>
+            {dueLabel && (
+              <span>
+                <strong style={{ color: '#374151', fontWeight: '600' }}>{t.actionPlanDueDate}:</strong>{' '}
+                <span style={{ color: dueColor, fontWeight: '600' }}>{dueLabel}</span>
+              </span>
+            )}
+          </div>
+        </div>
+        
+        {/* Actions */}
+        <div style={{ display: 'flex', gap: '0.25rem', flexShrink: 0 }}>
+          <select
+            value={item.status}
+            onChange={(e) => onStatusChange(e.target.value)}
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              padding: '0.25rem 0.4rem', border: '1px solid #d1d5db',
+              borderRadius: '4px', fontSize: '0.75rem', cursor: 'pointer',
+              background: 'white'
+            }}
+            title={t.actionPlanItemStatus}
+          >
+            <option value="pending">{t.actionPlanPending}</option>
+            <option value="in-progress">{t.actionPlanInProgress}</option>
+            <option value="blocked">{t.actionPlanBlocked}</option>
+            <option value="done">{t.actionPlanDone}</option>
+            <option value="cancelled">{t.actionPlanCancelled}</option>
+          </select>
+          <button
+            onClick={onEdit}
+            style={{
+              background: 'white', color: '#6b7280', border: '1px solid #d1d5db',
+              width: '28px', height: '28px', borderRadius: '4px',
+              cursor: 'pointer', fontSize: '0.75rem'
+            }}
+            title={t.actionPlanEditItem}
+          >✏️</button>
+          <button
+            onClick={onDelete}
+            style={{
+              background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca',
+              width: '28px', height: '28px', borderRadius: '4px',
+              cursor: 'pointer', fontSize: '0.75rem'
+            }}
+            title={t.actionPlanDelete}
+          >🗑️</button>
+        </div>
+      </div>
+      
+      {/* Target metric */}
+      {item.targetMetric && metricProgress && (
+        <div style={{
+          background: '#f9fafb', border: '1px solid #e5e7eb',
+          borderRadius: '6px', padding: '0.5rem 0.75rem', marginTop: '0.5rem',
+          fontSize: '0.75rem'
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+            <span style={{ color: '#6b7280' }}>
+              {t.actionPlanTargetMetric}: {metricProgress.label}
+            </span>
+            <span style={{ fontWeight: '600', color: '#1f2937' }}>
+              {metricProgress.current.toFixed(metricProgress.unit === '%' ? 1 : 0)} / {metricProgress.target} {metricProgress.unit}
+            </span>
+          </div>
+          <div style={{ background: '#e5e7eb', height: '4px', borderRadius: '2px', overflow: 'hidden' }}>
+            <div style={{
+              background: metricProgress.percentProgress >= 100 ? '#059669' 
+                : metricProgress.percentProgress >= 50 ? '#f59e0b' : '#dc2626',
+              height: '100%',
+              width: `${metricProgress.percentProgress}%`,
+              transition: 'width 0.3s'
+            }} />
+          </div>
+        </div>
+      )}
+      
+      {/* Checkpoints */}
+      {item.checkpoints && item.checkpoints.length > 0 && (
+        <div style={{ marginTop: '0.5rem', fontSize: '0.75rem' }}>
+          <div style={{ color: '#6b7280', fontWeight: '600', marginBottom: '0.25rem' }}>
+            {t.actionPlanCheckpoints} ({cpDone}/{cpTotal})
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.125rem' }}>
+            {item.checkpoints.map(cp => (
+              <div 
+                key={cp.id} 
+                onClick={() => onToggleCheckpoint(cp.id)}
+                style={{ 
+                  display: 'flex', alignItems: 'center', gap: '0.375rem',
+                  cursor: 'pointer',
+                  padding: '0.125rem 0',
+                  userSelect: 'none'
+                }}
+              >
+                <span style={{ color: cp.done ? '#059669' : '#d1d5db', fontSize: '0.875rem' }}>
+                  {cp.done ? '✓' : '○'}
+                </span>
+                <span style={{ 
+                  textDecoration: cp.done ? 'line-through' : 'none',
+                  color: cp.done ? '#9ca3af' : '#374151'
+                }}>
+                  {cp.title}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      
+      {/* Notes summary */}
+      {item.progressNotes && item.progressNotes.length > 0 && (
+        <div style={{
+          marginTop: '0.5rem',
+          fontSize: '0.6875rem',
+          color: '#6b7280',
+          fontStyle: 'italic'
+        }}>
+          💬 {item.progressNotes.length} {isPt ? 'nota(s) de progresso' : 'progress note(s)'}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Edit / create item modal
+function ActionPlanItemEditor({ item, t, isPt, latestData, onSave, onCancel }) {
+  const [draft, setDraft] = useState({ ...item });
+  const [newCheckpointTitle, setNewCheckpointTitle] = useState('');
+  const [newNoteText, setNewNoteText] = useState('');
+  
+  const update = (key, value) => setDraft(d => ({ ...d, [key]: value }));
+  
+  const handleAddCheckpoint = () => {
+    if (!newCheckpointTitle.trim()) return;
+    setDraft(d => ({
+      ...d,
+      checkpoints: [...(d.checkpoints || []), {
+        id: generatePlanItemId(),
+        title: newCheckpointTitle.trim(),
+        done: false,
+        completedAt: null
+      }]
+    }));
+    setNewCheckpointTitle('');
+  };
+  
+  const handleRemoveCheckpoint = (cpId) => {
+    setDraft(d => ({
+      ...d,
+      checkpoints: (d.checkpoints || []).filter(c => c.id !== cpId)
+    }));
+  };
+  
+  const handleAddNote = () => {
+    if (!newNoteText.trim()) return;
+    setDraft(d => ({
+      ...d,
+      progressNotes: [...(d.progressNotes || []), {
+        timestamp: new Date().toISOString(),
+        author: 'CSM',
+        note: newNoteText.trim()
+      }]
+    }));
+    setNewNoteText('');
+  };
+  
+  const handleSave = () => {
+    if (!draft.title?.trim()) {
+      alert(isPt ? 'Título é obrigatório' : 'Title is required');
+      return;
+    }
+    const { _isNew, ...cleanDraft } = draft;
+    onSave(cleanDraft);
+  };
+  
+  // Try to suggest a target metric when dimension changes
+  const handleDimensionChange = (newDim) => {
+    update('dimension', newDim);
+    if (latestData && !draft.targetMetric) {
+      const suggested = getMetricForDimension(newDim, latestData, isPt ? 'pt' : 'en');
+      if (suggested) update('targetMetric', suggested);
+    }
+  };
+  
+  return (
+    <div
+      onClick={onCancel}
+      style={{
+        position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+        background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        zIndex: 2000, padding: '2rem'
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: 'white', borderRadius: '12px', padding: '1.5rem',
+          maxWidth: '640px', width: '100%', maxHeight: '85vh',
+          overflowY: 'auto', boxShadow: '0 20px 50px rgba(0,0,0,0.3)'
+        }}
+      >
+        <h2 style={{ margin: '0 0 1rem 0', color: '#1f2937', fontSize: '1.25rem' }}>
+          {item._isNew ? t.actionPlanNewItemTitle : t.actionPlanEditItem}
+        </h2>
+        
+        {/* Title */}
+        <div style={{ marginBottom: '0.75rem' }}>
+          <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: '#374151', marginBottom: '0.25rem' }}>
+            {t.actionPlanItemTitle} *
+          </label>
+          <input
+            type="text"
+            value={draft.title || ''}
+            onChange={(e) => update('title', e.target.value)}
+            style={{
+              width: '100%', padding: '0.5rem', border: '1px solid #d1d5db',
+              borderRadius: '6px', fontSize: '0.875rem', boxSizing: 'border-box'
+            }}
+          />
+        </div>
+        
+        {/* Description */}
+        <div style={{ marginBottom: '0.75rem' }}>
+          <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: '#374151', marginBottom: '0.25rem' }}>
+            {t.actionPlanItemDescription}
+          </label>
+          <textarea
+            value={draft.description || ''}
+            onChange={(e) => update('description', e.target.value)}
+            rows={2}
+            style={{
+              width: '100%', padding: '0.5rem', border: '1px solid #d1d5db',
+              borderRadius: '6px', fontSize: '0.875rem', boxSizing: 'border-box',
+              resize: 'vertical', fontFamily: 'inherit'
+            }}
+          />
+        </div>
+        
+        {/* Row: dimension + priority + status */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.5rem', marginBottom: '0.75rem' }}>
+          <div>
+            <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: '#374151', marginBottom: '0.25rem' }}>
+              {t.actionPlanItemDimension}
+            </label>
+            <select
+              value={draft.dimension || 'governance'}
+              onChange={(e) => handleDimensionChange(e.target.value)}
+              style={{ width: '100%', padding: '0.4rem', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.8125rem' }}
+            >
+              <option value="adoption">{isPt ? 'Adoção' : 'Adoption'}</option>
+              <option value="governance">{isPt ? 'Governança' : 'Governance'}</option>
+              <option value="quality">{isPt ? 'Qualidade' : 'Quality'}</option>
+              <option value="alerting">{isPt ? 'Alertas' : 'Alerting'}</option>
+              <option value="cost">{isPt ? 'Custo' : 'Cost'}</option>
+            </select>
+          </div>
+          <div>
+            <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: '#374151', marginBottom: '0.25rem' }}>
+              {t.actionPlanItemPriority}
+            </label>
+            <select
+              value={draft.priority || 'MEDIUM'}
+              onChange={(e) => update('priority', e.target.value)}
+              style={{ width: '100%', padding: '0.4rem', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.8125rem' }}
+            >
+              {ACTION_PLAN_PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: '#374151', marginBottom: '0.25rem' }}>
+              {t.actionPlanItemStatus}
+            </label>
+            <select
+              value={draft.status || 'pending'}
+              onChange={(e) => update('status', e.target.value)}
+              style={{ width: '100%', padding: '0.4rem', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.8125rem' }}
+            >
+              <option value="pending">{t.actionPlanPending}</option>
+              <option value="in-progress">{t.actionPlanInProgress}</option>
+              <option value="blocked">{t.actionPlanBlocked}</option>
+              <option value="done">{t.actionPlanDone}</option>
+              <option value="cancelled">{t.actionPlanCancelled}</option>
+            </select>
+          </div>
+        </div>
+        
+        {/* Row: owner + ownerName + dueDate */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.5rem', marginBottom: '0.75rem' }}>
+          <div>
+            <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: '#374151', marginBottom: '0.25rem' }}>
+              {t.actionPlanOwner}
+            </label>
+            <select
+              value={draft.owner || 'Customer Tech'}
+              onChange={(e) => update('owner', e.target.value)}
+              style={{ width: '100%', padding: '0.4rem', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.8125rem' }}
+            >
+              {ACTION_PLAN_OWNERS.map(o => <option key={o} value={o}>{o}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: '#374151', marginBottom: '0.25rem' }}>
+              {t.actionPlanOwnerName}
+            </label>
+            <input
+              type="text"
+              value={draft.ownerName || ''}
+              onChange={(e) => update('ownerName', e.target.value)}
+              placeholder={isPt ? 'Ex: João Silva' : 'e.g. John Smith'}
+              style={{
+                width: '100%', padding: '0.4rem', border: '1px solid #d1d5db',
+                borderRadius: '6px', fontSize: '0.8125rem', boxSizing: 'border-box'
+              }}
+            />
+          </div>
+          <div>
+            <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: '#374151', marginBottom: '0.25rem' }}>
+              {t.actionPlanDueDate}
+            </label>
+            <input
+              type="date"
+              value={draft.dueDate ? draft.dueDate.slice(0, 10) : ''}
+              onChange={(e) => update('dueDate', e.target.value ? new Date(e.target.value).toISOString() : null)}
+              style={{
+                width: '100%', padding: '0.4rem', border: '1px solid #d1d5db',
+                borderRadius: '6px', fontSize: '0.8125rem', boxSizing: 'border-box'
+              }}
+            />
+          </div>
+        </div>
+        
+        {/* Target metric */}
+        {draft.targetMetric && (
+          <div style={{
+            background: '#f9fafb', border: '1px solid #e5e7eb',
+            borderRadius: '6px', padding: '0.625rem', marginBottom: '0.75rem'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.375rem' }}>
+              <label style={{ fontSize: '0.75rem', fontWeight: '600', color: '#374151' }}>
+                🎯 {t.actionPlanTargetMetric}: {draft.targetMetric.label}
+              </label>
+              <button
+                onClick={() => update('targetMetric', null)}
+                style={{ background: 'none', border: 'none', color: '#dc2626', fontSize: '0.75rem', cursor: 'pointer' }}
+              >
+                {t.actionPlanCancel}
+              </button>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', fontSize: '0.75rem' }}>
+              <div>
+                <span style={{ color: '#6b7280' }}>{t.actionPlanFromValue}:</span> <strong>{draft.targetMetric.currentValue}</strong> {draft.targetMetric.unit}
+              </div>
+              <div>
+                <span style={{ color: '#6b7280' }}>{t.actionPlanToValue}:</span>{' '}
+                <input
+                  type="number"
+                  value={draft.targetMetric.targetValue}
+                  onChange={(e) => update('targetMetric', { ...draft.targetMetric, targetValue: Number(e.target.value) })}
+                  style={{ 
+                    width: '60px', padding: '0.125rem 0.25rem', border: '1px solid #d1d5db',
+                    borderRadius: '4px', fontSize: '0.75rem'
+                  }}
+                /> {draft.targetMetric.unit}
+              </div>
+            </div>
+          </div>
+        )}
+        
+        {/* Checkpoints */}
+        <div style={{ marginBottom: '0.75rem' }}>
+          <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: '#374151', marginBottom: '0.375rem' }}>
+            {t.actionPlanCheckpoints} ({(draft.checkpoints || []).length})
+          </label>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+            {(draft.checkpoints || []).map(cp => (
+              <div key={cp.id} style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', fontSize: '0.8125rem' }}>
+                <span style={{ color: cp.done ? '#059669' : '#d1d5db' }}>{cp.done ? '✓' : '○'}</span>
+                <span style={{ flex: 1, textDecoration: cp.done ? 'line-through' : 'none', color: cp.done ? '#9ca3af' : '#374151' }}>
+                  {cp.title}
+                </span>
+                <button
+                  onClick={() => handleRemoveCheckpoint(cp.id)}
+                  style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: '0.75rem' }}
+                >×</button>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: '0.375rem', marginTop: '0.375rem' }}>
+            <input
+              type="text"
+              value={newCheckpointTitle}
+              onChange={(e) => setNewCheckpointTitle(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddCheckpoint(); } }}
+              placeholder={isPt ? 'Novo checkpoint...' : 'New checkpoint...'}
+              style={{
+                flex: 1, padding: '0.375rem', border: '1px solid #d1d5db',
+                borderRadius: '6px', fontSize: '0.8125rem', boxSizing: 'border-box'
+              }}
+            />
+            <button
+              onClick={handleAddCheckpoint}
+              style={{
+                background: '#632CA6', color: 'white', border: 'none',
+                padding: '0.375rem 0.75rem', borderRadius: '6px',
+                fontSize: '0.8125rem', fontWeight: '600', cursor: 'pointer'
+              }}
+            >+</button>
+          </div>
+        </div>
+        
+        {/* Progress notes */}
+        <div style={{ marginBottom: '1rem' }}>
+          <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', color: '#374151', marginBottom: '0.375rem' }}>
+            {t.actionPlanProgressNotes} ({(draft.progressNotes || []).length})
+          </label>
+          {(draft.progressNotes || []).length > 0 && (
+            <div style={{ 
+              maxHeight: '120px', overflowY: 'auto', 
+              background: '#f9fafb', border: '1px solid #e5e7eb',
+              borderRadius: '6px', padding: '0.5rem', marginBottom: '0.375rem'
+            }}>
+              {draft.progressNotes.map((n, idx) => (
+                <div key={idx} style={{ fontSize: '0.75rem', marginBottom: '0.25rem', paddingBottom: '0.25rem', borderBottom: idx < draft.progressNotes.length - 1 ? '1px solid #e5e7eb' : 'none' }}>
+                  <div style={{ color: '#6b7280', fontStyle: 'italic' }}>
+                    {new Date(n.timestamp).toLocaleString(t.locale, { dateStyle: 'short', timeStyle: 'short' })}
+                  </div>
+                  <div>{n.note}</div>
+                </div>
+              ))}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: '0.375rem' }}>
+            <input
+              type="text"
+              value={newNoteText}
+              onChange={(e) => setNewNoteText(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddNote(); } }}
+              placeholder={isPt ? 'Adicionar nota...' : 'Add note...'}
+              style={{
+                flex: 1, padding: '0.375rem', border: '1px solid #d1d5db',
+                borderRadius: '6px', fontSize: '0.8125rem', boxSizing: 'border-box'
+              }}
+            />
+            <button
+              onClick={handleAddNote}
+              style={{
+                background: '#632CA6', color: 'white', border: 'none',
+                padding: '0.375rem 0.75rem', borderRadius: '6px',
+                fontSize: '0.8125rem', fontWeight: '600', cursor: 'pointer'
+              }}
+            >+</button>
+          </div>
+        </div>
+        
+        {/* Buttons */}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
+          <button
+            onClick={onCancel}
+            style={{
+              background: 'white', color: '#374151', border: '1px solid #d1d5db',
+              padding: '0.5rem 1rem', borderRadius: '6px',
+              fontSize: '0.875rem', fontWeight: '600', cursor: 'pointer'
+            }}
+          >
+            {t.actionPlanCancel}
+          </button>
+          <button
+            onClick={handleSave}
+            style={{
+              background: '#632CA6', color: 'white', border: 'none',
+              padding: '0.5rem 1rem', borderRadius: '6px',
+              fontSize: '0.875rem', fontWeight: '600', cursor: 'pointer'
+            }}
+          >
+            {t.actionPlanSave}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CustomerDetailModal({ customer, onClose, onDataChange, t }) {
   // Get latest assessment for dimension data
   const latest = customer.latestAssessment;
+  
+  // v40: Active tab in the modal — 'overview' | 'plan'
+  // Default to 'overview' so existing behavior is preserved.
+  const [activeTab, setActiveTab] = useState('overview');
   
   // Edit mode states
   const [isEditingCustomer, setIsEditingCustomer] = useState(false);
@@ -13116,6 +14702,49 @@ function CustomerDetailModal({ customer, onClose, onDataChange, t }) {
 
         {/* Content */}
         <div style={{ padding: '2rem' }}>
+          {/* v40: Tab Navigation — Overview / Action Plan */}
+          <div style={{ 
+            display: 'flex', 
+            gap: '0.25rem', 
+            marginBottom: '1.5rem',
+            borderBottom: '1px solid #e5e7eb'
+          }}>
+            <button
+              onClick={() => setActiveTab('overview')}
+              style={{
+                padding: '0.625rem 1rem',
+                border: 'none',
+                background: 'transparent',
+                borderBottom: activeTab === 'overview' ? '2px solid #632CA6' : '2px solid transparent',
+                color: activeTab === 'overview' ? '#632CA6' : '#6b7280',
+                fontWeight: activeTab === 'overview' ? '600' : '500',
+                fontSize: '0.9375rem',
+                cursor: 'pointer',
+                marginBottom: '-1px'
+              }}
+            >
+              {t.locale === 'pt-BR' ? 'Visão Geral' : 'Overview'}
+            </button>
+            <button
+              onClick={() => setActiveTab('plan')}
+              style={{
+                padding: '0.625rem 1rem',
+                border: 'none',
+                background: 'transparent',
+                borderBottom: activeTab === 'plan' ? '2px solid #632CA6' : '2px solid transparent',
+                color: activeTab === 'plan' ? '#632CA6' : '#6b7280',
+                fontWeight: activeTab === 'plan' ? '600' : '500',
+                fontSize: '0.9375rem',
+                cursor: 'pointer',
+                marginBottom: '-1px'
+              }}
+            >
+              📋 {t.actionPlanTab}
+            </button>
+          </div>
+          
+          {/* v40: Overview tab content (existing behavior) */}
+          {activeTab === 'overview' && (<>
           {/* KPI Cards */}
           <div style={{ 
             display: 'grid', 
@@ -13802,6 +15431,17 @@ function CustomerDetailModal({ customer, onClose, onDataChange, t }) {
               </div>
             )}
           </div>
+          </>)}
+          
+          {/* v40: Action Plan tab content */}
+          {activeTab === 'plan' && (
+            <ActionPlanTab
+              customer={customer}
+              latestAssessment={latest}
+              t={t}
+              showNotification={showNotification}
+            />
+          )}
         </div>
       </div>
       
