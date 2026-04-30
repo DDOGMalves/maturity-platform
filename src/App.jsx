@@ -10716,7 +10716,7 @@ function DatadogAdminConsole({ onBack, onNavigateToAssessment, initialLanguage }
         {view === 'portfolio' && <PortfolioView customers={customerGroups} kpis={portfolioKPIs} t={t} onSelectCustomer={setSelectedCustomer} />}
         {view === 'heatmap' && <HeatmapView customers={customerGroups} t={t} />}
         {view === 'compare' && <CompareView customers={customerGroups} t={t} />}
-        {view === 'benchmarks' && <BenchmarksView assessments={allAssessments} customers={customerGroups} t={t} />}
+        {view === 'benchmarks' && <BenchmarksViewWithToggle assessments={allAssessments} customers={customerGroups} t={t} />}
       </div>
       
       {selectedCustomer && (
@@ -11471,6 +11471,1132 @@ function PortfolioView({ customers, kpis, t, onSelectCustomer }) {
 }
 
 // Benchmarks View
+// ============================================================================
+// v41: Benchmark page redesigned for executive readability
+// ============================================================================
+// Wrapper that lets the user toggle between the original (V1) statistical view
+// and the new (V2) executive view. Default to V2 since it's the upgrade we
+// want to push, but V1 stays accessible for one release as a safety net.
+//
+// Toggle preference is persisted to localStorage so the choice sticks across
+// sessions per browser.
+function BenchmarksViewWithToggle({ assessments, customers, t }) {
+  const TOGGLE_KEY = 'datadog-benchmarks-view-version';
+  const [version, setVersion] = useState(() => {
+    try {
+      return localStorage.getItem(TOGGLE_KEY) || 'v2';
+    } catch (e) {
+      return 'v2';
+    }
+  });
+  
+  const setAndPersist = (v) => {
+    setVersion(v);
+    try { localStorage.setItem(TOGGLE_KEY, v); } catch (e) { /* ignore */ }
+  };
+  
+  const isPt = t.locale === 'pt-BR';
+  
+  return (
+    <div>
+      {/* Toggle: top right, subtle, switch-style */}
+      <div style={{ 
+        display: 'flex', 
+        justifyContent: 'flex-end', 
+        marginBottom: '1rem',
+        gap: '0.5rem',
+        alignItems: 'center',
+        fontSize: '0.75rem',
+        color: '#6b7280'
+      }}>
+        <span>{isPt ? 'Visualização:' : 'View:'}</span>
+        <div style={{
+          display: 'inline-flex',
+          background: '#f3f4f6',
+          borderRadius: '6px',
+          padding: '2px',
+          border: '1px solid #e5e7eb'
+        }}>
+          <button
+            onClick={() => setAndPersist('v2')}
+            style={{
+              padding: '0.3rem 0.75rem',
+              border: 'none',
+              borderRadius: '4px',
+              fontSize: '0.75rem',
+              fontWeight: '600',
+              cursor: 'pointer',
+              background: version === 'v2' ? 'white' : 'transparent',
+              color: version === 'v2' ? '#632CA6' : '#6b7280',
+              boxShadow: version === 'v2' ? '0 1px 2px rgba(0,0,0,0.05)' : 'none',
+              transition: 'all 0.15s'
+            }}
+          >
+            {isPt ? 'Executiva' : 'Executive'}
+          </button>
+          <button
+            onClick={() => setAndPersist('v1')}
+            style={{
+              padding: '0.3rem 0.75rem',
+              border: 'none',
+              borderRadius: '4px',
+              fontSize: '0.75rem',
+              fontWeight: '600',
+              cursor: 'pointer',
+              background: version === 'v1' ? 'white' : 'transparent',
+              color: version === 'v1' ? '#632CA6' : '#6b7280',
+              boxShadow: version === 'v1' ? '0 1px 2px rgba(0,0,0,0.05)' : 'none',
+              transition: 'all 0.15s'
+            }}
+          >
+            {isPt ? 'Estatística' : 'Statistical'}
+          </button>
+        </div>
+      </div>
+      
+      {version === 'v2' 
+        ? <BenchmarksViewV2 assessments={assessments} customers={customers} t={t} />
+        : <BenchmarksView assessments={assessments} customers={customers} t={t} />
+      }
+    </div>
+  );
+}
+
+// ============================================================================
+// v41: BenchmarksViewV2 — Executive layout
+// ============================================================================
+// Hierarchy: hero → interpretation → benchmark context → ruler → dimensions →
+// gaps → recommendations → trend → simulator (de-emphasized) → methodology.
+// Logic: data → interpretation → decision (every block answers "so what?").
+// ============================================================================
+function BenchmarksViewV2({ assessments, customers, t }) {
+  const isPt = t.locale === 'pt-BR';
+  
+  // ==========================================================================
+  // Customer selection — V2 needs a "current" customer to anchor the executive
+  // narrative. Default to first customer with assessments. CSM can switch.
+  // ==========================================================================
+  const customersWithAssessments = useMemo(() => {
+    return (customers || []).filter(c => c.assessments && c.assessments.length > 0);
+  }, [customers]);
+  
+  const [selectedCustomerId, setSelectedCustomerId] = useState(
+    () => customersWithAssessments[0]?.customerId || null
+  );
+  
+  const currentCustomer = useMemo(() => {
+    return customersWithAssessments.find(c => c.customerId === selectedCustomerId) 
+      || customersWithAssessments[0] 
+      || null;
+  }, [selectedCustomerId, customersWithAssessments]);
+  
+  // ==========================================================================
+  // Empty state
+  // ==========================================================================
+  if (!currentCustomer || !assessments || assessments.length === 0) {
+    return (
+      <div style={{
+        background: '#f9fafb',
+        border: '1px solid #e5e7eb',
+        borderRadius: '12px',
+        padding: '3rem 2rem',
+        textAlign: 'center',
+        color: '#6b7280'
+      }}>
+        <div style={{ fontSize: '2.5rem', marginBottom: '1rem' }}>📊</div>
+        <h3 style={{ margin: '0 0 0.5rem 0', color: '#1f2937', fontSize: '1.125rem' }}>
+          {isPt ? 'Sem dados para análise comparativa' : 'No data for comparative analysis'}
+        </h3>
+        <p style={{ margin: 0, fontSize: '0.9375rem' }}>
+          {isPt 
+            ? 'Realize ao menos uma avaliação para visualizar o benchmark.'
+            : 'Run at least one assessment to view the benchmark.'}
+        </p>
+      </div>
+    );
+  }
+  
+  // ==========================================================================
+  // Stats from sample
+  // ==========================================================================
+  const sampleScores = assessments.map(a => a.rawScore).sort((a, b) => a - b);
+  const sampleSize = sampleScores.length;
+  const isSmallSample = sampleSize < 10;
+  
+  const avg = sampleScores.reduce((a, b) => a + b, 0) / sampleSize;
+  const median = sampleScores[Math.floor(sampleSize / 2)];
+  const lowerBound = sampleScores[Math.floor(sampleSize * 0.25)];
+  const upperBound = sampleScores[Math.floor(sampleSize * 0.75)];
+  const top = sampleScores[sampleSize - 1];
+  
+  // ==========================================================================
+  // Current customer's data
+  // ==========================================================================
+  const latest = currentCustomer.latestAssessment;
+  const currentScore = latest?.rawScore || 0;
+  const currentLevel = latest?.finalLevel ?? 0;
+  
+  // Previous score (second-most-recent assessment)
+  const sortedAssess = [...currentCustomer.assessments].sort(
+    (a, b) => new Date(b.date) - new Date(a.date)
+  );
+  const previousAssessment = sortedAssess[1] || null;
+  const previousScore = previousAssessment?.rawScore || null;
+  const scoreDelta = previousScore !== null ? currentScore - previousScore : null;
+  
+  // Percentile of current score in sample
+  const lowerCount = sampleScores.filter(s => s < currentScore).length;
+  const percentile = sampleSize > 0 ? Math.round((lowerCount / sampleSize) * 100) : 50;
+  
+  // Helper: dimension score (handles polymorphic shape)
+  const dimScore = (d) => {
+    if (d === undefined || d === null) return 0;
+    if (typeof d === 'number') return d;
+    if (typeof d === 'object' && d.score !== undefined) return Number(d.score);
+    return 0;
+  };
+  
+  const dims = latest?.dimensions || {};
+  const dimensionData = [
+    { key: 'adoption',   label: isPt ? 'Adoção' : 'Adoption',                score: dimScore(dims.adoption) },
+    { key: 'governance', label: isPt ? 'Governança Operacional' : 'Operational Governance', score: dimScore(dims.governance) },
+    { key: 'quality',    label: isPt ? 'Qualidade da Telemetria' : 'Telemetry Quality',     score: dimScore(dims.quality) },
+    { key: 'alerting',   label: isPt ? 'Confiabilidade dos Alertas' : 'Alerting Reliability', score: dimScore(dims.alerting) },
+    { key: 'cost',       label: isPt ? 'Governança de Custo' : 'Cost Governance',           score: dimScore(dims.cost) }
+  ];
+  
+  // Maturity level labels (for ruler and badges)
+  const levelLabels = isPt ? [
+    { num: 0, name: 'Ad hoc' },
+    { num: 1, name: 'Reativo' },
+    { num: 2, name: 'Proativo' },
+    { num: 3, name: 'Avançado' },
+    { num: 4, name: 'Preditivo' },
+    { num: 5, name: 'Autônomo' }
+  ] : [
+    { num: 0, name: 'Ad hoc' },
+    { num: 1, name: 'Reactive' },
+    { num: 2, name: 'Proactive' },
+    { num: 3, name: 'Advanced' },
+    { num: 4, name: 'Predictive' },
+    { num: 5, name: 'Autonomous' }
+  ];
+  
+  const levelFullName = (lvl) => {
+    const names = isPt ? [
+      'Ad hoc',
+      'Monitoramento Reativo',
+      'Monitoramento Proativo',
+      'Observabilidade Avançada',
+      'Operação Preditiva',
+      'Operações Autônomas'
+    ] : [
+      'Ad hoc',
+      'Reactive Monitoring',
+      'Proactive Monitoring',
+      'Advanced Observability',
+      'Predictive Operations',
+      'Autonomous Operations'
+    ];
+    return names[Math.max(0, Math.min(5, Math.floor(lvl)))] || '';
+  };
+  
+  // ==========================================================================
+  // Executive interpretation by level
+  // ==========================================================================
+  const interpretation = (() => {
+    const intLvl = Math.floor(currentLevel);
+    if (isPt) {
+      const byLevel = {
+        0: {
+          state: 'Sua organização está em estágio Ad hoc, com monitoramento desestruturado e dependência de descobertas reativas.',
+          working: ['Há intenção de melhorar a operação', 'Times reconhecem a necessidade de visibilidade'],
+          gaps: ['Sem padrão consistente de monitoração', 'Resposta a incidentes 100% reativa', 'Sem governança ou ownership'],
+          next: 'Para avançar ao Nível 1, foco em estabelecer monitoramento básico de infraestrutura e definir donos por sistema crítico.'
+        },
+        1: {
+          state: 'Sua organização está em estágio de Monitoramento Reativo. Existem alertas, mas a operação ainda depende de descoberta tardia de problemas.',
+          working: ['Monitoramento mínimo de infraestrutura', 'Alguns alertas configurados em sistemas críticos'],
+          gaps: ['Alta taxa de falsos positivos / fadiga de alerta', 'Cobertura de ownership inconsistente', 'Sem padronização entre times'],
+          next: 'Para avançar ao Nível 2, foco em higiene de alertas, ownership claro e padronização básica.'
+        },
+        2: {
+          state: 'Você está em um estágio de Monitoramento Proativo. Já existe uma base de monitoramento estruturado, mas ainda há dependência de visões fragmentadas e baixa correlação entre contexto técnico e impacto de negócio.',
+          working: ['Monitoramento mais estruturado', 'Maior capacidade de detecção antes da reclamação do usuário', 'Base mínima para padronização'],
+          gaps: ['Baixa correlação ponta a ponta', 'Pouca leitura por serviço crítico', 'Baixa conexão com métricas de negócio', 'Governança inconsistente entre times'],
+          next: 'Para avançar ao Nível 3, o foco deve estar em observabilidade integrada, visão por serviço e padronização operacional.'
+        },
+        3: {
+          state: 'Sua organização atingiu Observabilidade Avançada. Sinais técnicos estão integrados e há leitura por serviço, mas ainda falta predição e automação.',
+          working: ['Observabilidade integrada (logs + métricas + traces)', 'Leitura por serviço crítico', 'Governança operacional consistente'],
+          gaps: ['Pouca capacidade preditiva', 'Automação limitada de remediação', 'Conexão técnico ↔ negócio ainda em construção'],
+          next: 'Para avançar ao Nível 4, foco em capacidades preditivas (ML/anomaly detection) e automação de runbooks.'
+        },
+        4: {
+          state: 'Sua organização opera em modo Preditivo. Anomalias são detectadas antes de virarem incidentes e há automação parcial.',
+          working: ['Anomaly detection ativo em sistemas críticos', 'Runbooks automatizados para padrões conhecidos', 'Governança maduras com SLOs e error budgets'],
+          gaps: ['Automação não cobre todos os cenários', 'Conexão com negócio ainda manual', 'Aprendizado entre incidentes pode ser sistematizado'],
+          next: 'Para avançar ao Nível 5, foco em sistemas auto-corretivos e telemetria de negócio em tempo real.'
+        },
+        5: {
+          state: 'Sua organização atingiu Operações Autônomas. Sistemas se auto-corrigem e há feedback loop completo entre operação e negócio.',
+          working: ['Auto-remediação ampla', 'Telemetria de negócio em tempo real', 'Cultura de continuous improvement consolidada'],
+          gaps: ['Manutenção do estado é desafio constante', 'Frontiers de IA/ML aplicada à operação'],
+          next: 'O foco agora é manter a excelência e expandir capacidades preditivas para áreas adjacentes.'
+        }
+      };
+      return byLevel[intLvl] || byLevel[2];
+    } else {
+      const byLevel = {
+        0: {
+          state: 'Your organization is at Ad hoc stage, with unstructured monitoring and reliance on reactive discovery.',
+          working: ['Intent to improve operations', 'Teams recognize the need for visibility'],
+          gaps: ['No consistent monitoring standard', '100% reactive incident response', 'No governance or ownership'],
+          next: 'To advance to Level 1, focus on basic infrastructure monitoring and ownership for critical systems.'
+        },
+        1: {
+          state: 'Your organization is at Reactive Monitoring stage. Alerts exist, but operations still rely on late discovery of issues.',
+          working: ['Minimal infrastructure monitoring', 'Some alerts configured on critical systems'],
+          gaps: ['High false-positive rate / alert fatigue', 'Inconsistent ownership coverage', 'No standardization across teams'],
+          next: 'To advance to Level 2, focus on alert hygiene, clear ownership, and basic standardization.'
+        },
+        2: {
+          state: 'You are at Proactive Monitoring stage. There is a base of structured monitoring, but operations still depend on fragmented views and low correlation between technical context and business impact.',
+          working: ['More structured monitoring', 'Better detection before user complaints', 'Minimum base for standardization'],
+          gaps: ['Low end-to-end correlation', 'Limited per-service view', 'Weak connection to business metrics', 'Inconsistent governance across teams'],
+          next: 'To advance to Level 3, focus on integrated observability, per-service view, and operational standardization.'
+        },
+        3: {
+          state: 'Your organization reached Advanced Observability. Technical signals are integrated and there is per-service reading, but prediction and automation are still missing.',
+          working: ['Integrated observability (logs + metrics + traces)', 'Per-critical-service reading', 'Consistent operational governance'],
+          gaps: ['Limited predictive capability', 'Limited remediation automation', 'Tech ↔ business connection still maturing'],
+          next: 'To advance to Level 4, focus on predictive capabilities (ML/anomaly detection) and runbook automation.'
+        },
+        4: {
+          state: 'Your organization operates at Predictive mode. Anomalies are detected before becoming incidents and there is partial automation.',
+          working: ['Active anomaly detection on critical systems', 'Automated runbooks for known patterns', 'Mature governance with SLOs and error budgets'],
+          gaps: ['Automation does not cover all scenarios', 'Business connection still manual', 'Learning across incidents can be systematized'],
+          next: 'To advance to Level 5, focus on self-healing systems and real-time business telemetry.'
+        },
+        5: {
+          state: 'Your organization reached Autonomous Operations. Systems self-heal and there is a complete feedback loop between operations and business.',
+          working: ['Broad auto-remediation', 'Real-time business telemetry', 'Consolidated continuous-improvement culture'],
+          gaps: ['Maintaining the state is a constant challenge', 'AI/ML frontiers applied to operations'],
+          next: 'The focus now is to maintain excellence and expand predictive capabilities to adjacent areas.'
+        }
+      };
+      return byLevel[intLvl] || byLevel[2];
+    }
+  })();
+  
+  // ==========================================================================
+  // Gaps and recommendations — derived from dimension scores
+  // ==========================================================================
+  const sortedDims = [...dimensionData].sort((a, b) => a.score - b.score);
+  const weakestDims = sortedDims.slice(0, 3); // 3 weakest dimensions
+  
+  const gapsByDimension = isPt ? {
+    adoption: { gap: 'Baixa adoção da plataforma entre times', impact: 'Reduz ROI da observabilidade e gera dependência de poucos especialistas', priority: 'Média' },
+    governance: { gap: 'Governança operacional inconsistente entre times', impact: 'Aumenta esforço de manutenção e dificulta escalabilidade', priority: 'Alta' },
+    quality: { gap: 'Lacunas em correlação ponta a ponta', impact: 'Dificulta RCA e aumenta tempo de resposta a incidentes', priority: 'Alta' },
+    alerting: { gap: 'Higiene de alertas frágil (recipients, muted, ruído)', impact: 'Aumenta fadiga operacional e atrasa resposta a incidentes', priority: 'Alta' },
+    cost: { gap: 'Sub-otimização de custos de telemetria', impact: 'Pressiona budget sem ganho proporcional de visibilidade', priority: 'Média' }
+  } : {
+    adoption: { gap: 'Low platform adoption across teams', impact: 'Reduces observability ROI and creates specialist dependency', priority: 'Medium' },
+    governance: { gap: 'Inconsistent operational governance across teams', impact: 'Increases maintenance effort and limits scalability', priority: 'High' },
+    quality: { gap: 'End-to-end correlation gaps', impact: 'Hampers RCA and increases incident response time', priority: 'High' },
+    alerting: { gap: 'Fragile alert hygiene (recipients, muted, noise)', impact: 'Increases operational fatigue and delays incident response', priority: 'High' },
+    cost: { gap: 'Sub-optimized telemetry costs', impact: 'Pressures budget without proportional visibility gain', priority: 'Medium' }
+  };
+  
+  const prioritizedGaps = weakestDims.map(d => ({
+    dimension: d.label,
+    ...(gapsByDimension[d.key] || { gap: '—', impact: '—', priority: '—' })
+  }));
+  
+  // Recommendations: pull from latest assessment if available
+  const classified = latest?.classifiedRecommendations || {};
+  const allRecs = [
+    ...(Array.isArray(classified.quickWins) ? classified.quickWins : []),
+    ...(Array.isArray(classified.strategic) ? classified.strategic : [])
+  ];
+  
+  const recsToShow = allRecs.slice(0, 5).map(rec => ({
+    title: rec.title || '—',
+    why: rec.expectedOutcome || rec.rationale || '—',
+    owner: rec.owner || '—',
+    timeframe: rec.timeframe || '—'
+  }));
+  
+  // ==========================================================================
+  // Render
+  // ==========================================================================
+  return (
+    <div>
+      {/* ==================== 1. HEADER ==================== */}
+      <div style={{ marginBottom: '1.5rem' }}>
+        <h2 style={{ fontSize: '1.75rem', fontWeight: '700', color: '#1f2937', margin: '0 0 0.5rem 0' }}>
+          {isPt ? 'Benchmark de Maturidade e Análise Comparativa' : 'Maturity Benchmark and Comparative Analysis'}
+        </h2>
+        <p style={{ fontSize: '0.9375rem', color: '#6b7280', margin: 0, lineHeight: 1.5, maxWidth: '900px' }}>
+          {isPt 
+            ? 'Posicionamento atual da organização, comparação com benchmark e próximos passos para evoluir maturidade operacional.'
+            : 'Current organizational positioning, benchmark comparison, and next steps to advance operational maturity.'}
+        </p>
+      </div>
+      
+      {/* Customer selector — only if there are multiple customers */}
+      {customersWithAssessments.length > 1 && (
+        <div style={{ marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+          <label style={{ fontSize: '0.8125rem', color: '#6b7280', fontWeight: '600' }}>
+            {isPt ? 'Organização:' : 'Organization:'}
+          </label>
+          <select
+            value={selectedCustomerId || ''}
+            onChange={(e) => setSelectedCustomerId(e.target.value)}
+            style={{
+              padding: '0.4rem 0.75rem',
+              border: '1px solid #d1d5db',
+              borderRadius: '6px',
+              fontSize: '0.875rem',
+              background: 'white',
+              minWidth: '240px'
+            }}
+          >
+            {customersWithAssessments.map(c => (
+              <option key={c.customerId} value={c.customerId}>
+                {c.latestAssessment?.teamName || c.customerId}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+      
+      {/* ==================== 2. HERO (4 CARDS) ==================== */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+        gap: '1rem',
+        marginBottom: '1rem'
+      }}>
+        {/* Score Atual */}
+        <div style={{
+          background: 'white',
+          border: '1px solid #e5e7eb',
+          borderRadius: '12px',
+          padding: '1.25rem'
+        }}>
+          <div style={{ fontSize: '0.6875rem', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: '600', marginBottom: '0.5rem' }}>
+            {isPt ? 'Score Atual' : 'Current Score'}
+          </div>
+          <div style={{ fontSize: '2rem', fontWeight: '700', color: '#632CA6', lineHeight: 1.1 }}>
+            {currentScore.toFixed(2)}
+          </div>
+          <div style={{ fontSize: '0.75rem', color: '#9ca3af', marginTop: '0.25rem' }}>
+            {isPt ? 'de 5,00' : 'of 5.00'}
+          </div>
+        </div>
+        
+        {/* Nível Atual */}
+        <div style={{
+          background: 'white',
+          border: '1px solid #e5e7eb',
+          borderRadius: '12px',
+          padding: '1.25rem'
+        }}>
+          <div style={{ fontSize: '0.6875rem', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: '600', marginBottom: '0.5rem' }}>
+            {isPt ? 'Nível Atual' : 'Current Level'}
+          </div>
+          <div style={{ fontSize: '1.5rem', fontWeight: '700', color: '#1f2937', lineHeight: 1.1 }}>
+            {isPt ? 'Nível' : 'Level'} {currentLevel}
+          </div>
+          <div style={{ fontSize: '0.8125rem', color: '#6b7280', marginTop: '0.25rem' }}>
+            {levelFullName(currentLevel)}
+          </div>
+        </div>
+        
+        {/* Posição no Benchmark */}
+        <div style={{
+          background: 'white',
+          border: '1px solid #e5e7eb',
+          borderRadius: '12px',
+          padding: '1.25rem'
+        }}>
+          <div style={{ fontSize: '0.6875rem', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: '600', marginBottom: '0.5rem' }}>
+            {isPt ? 'Posição no Benchmark' : 'Benchmark Position'}
+          </div>
+          <div style={{ fontSize: '2rem', fontWeight: '700', color: '#1f2937', lineHeight: 1.1 }}>
+            P{percentile}
+          </div>
+          <div style={{ fontSize: '0.75rem', color: '#9ca3af', marginTop: '0.25rem' }}>
+            {isPt ? `de ${sampleSize} avaliações` : `of ${sampleSize} assessments`}
+          </div>
+        </div>
+        
+        {/* Evolução */}
+        <div style={{
+          background: 'white',
+          border: '1px solid #e5e7eb',
+          borderRadius: '12px',
+          padding: '1.25rem'
+        }}>
+          <div style={{ fontSize: '0.6875rem', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: '600', marginBottom: '0.5rem' }}>
+            {isPt ? 'Evolução' : 'Evolution'}
+          </div>
+          {scoreDelta !== null ? (
+            <>
+              <div style={{ 
+                fontSize: '2rem', 
+                fontWeight: '700', 
+                color: scoreDelta > 0 ? '#059669' : scoreDelta < 0 ? '#dc2626' : '#6b7280', 
+                lineHeight: 1.1 
+              }}>
+                {scoreDelta > 0 ? '+' : ''}{scoreDelta.toFixed(2)}
+              </div>
+              <div style={{ fontSize: '0.75rem', color: '#9ca3af', marginTop: '0.25rem' }}>
+                {isPt ? 'desde a avaliação anterior' : 'since previous assessment'}
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: '0.875rem', color: '#6b7280', marginTop: '0.5rem', fontStyle: 'italic' }}>
+                {isPt ? 'Primeira avaliação' : 'First assessment'}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+      
+      {/* Executive message below hero */}
+      <div style={{
+        background: '#faf5ff',
+        borderLeft: '4px solid #632CA6',
+        padding: '1rem 1.25rem',
+        borderRadius: '0 8px 8px 0',
+        marginBottom: '2rem',
+        fontSize: '0.9375rem',
+        color: '#1f2937',
+        lineHeight: 1.6
+      }}>
+        {interpretation.state}
+      </div>
+      
+      {/* ==================== 3. INTERPRETAÇÃO EXECUTIVA ==================== */}
+      <div style={{
+        background: 'white',
+        border: '1px solid #e5e7eb',
+        borderRadius: '12px',
+        padding: '1.5rem',
+        marginBottom: '1.5rem'
+      }}>
+        <h3 style={{ margin: '0 0 1rem 0', fontSize: '1.125rem', color: '#1f2937', fontWeight: '600' }}>
+          {isPt ? 'O que este resultado significa' : 'What this result means'}
+        </h3>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1.25rem' }}>
+          <div>
+            <div style={{ fontSize: '0.75rem', color: '#6b7280', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>
+              {isPt ? 'Estado atual' : 'Current state'}
+            </div>
+            <div style={{ fontSize: '0.875rem', color: '#374151', lineHeight: 1.55 }}>
+              {interpretation.state}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: '0.75rem', color: '#059669', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>
+              ↑ {isPt ? 'O que já funciona' : 'What is working'}
+            </div>
+            <ul style={{ margin: 0, paddingLeft: '1.25rem', fontSize: '0.875rem', color: '#374151', lineHeight: 1.7 }}>
+              {interpretation.working.map((w, i) => <li key={i}>{w}</li>)}
+            </ul>
+          </div>
+          <div>
+            <div style={{ fontSize: '0.75rem', color: '#dc2626', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>
+              ↓ {isPt ? 'Lacunas para o próximo nível' : 'Gaps to next level'}
+            </div>
+            <ul style={{ margin: 0, paddingLeft: '1.25rem', fontSize: '0.875rem', color: '#374151', lineHeight: 1.7 }}>
+              {interpretation.gaps.map((g, i) => <li key={i}>{g}</li>)}
+            </ul>
+          </div>
+        </div>
+        <div style={{
+          marginTop: '1.25rem',
+          paddingTop: '1rem',
+          borderTop: '1px solid #f3f4f6',
+          fontSize: '0.875rem',
+          color: '#1f2937',
+          fontStyle: 'italic'
+        }}>
+          {interpretation.next}
+        </div>
+      </div>
+      
+      {/* ==================== 4. BENCHMARK CARDS ==================== */}
+      <div style={{
+        background: 'white',
+        border: '1px solid #e5e7eb',
+        borderRadius: '12px',
+        padding: '1.5rem',
+        marginBottom: '1.5rem'
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+          <h3 style={{ margin: 0, fontSize: '1.125rem', color: '#1f2937', fontWeight: '600' }}>
+            {isPt ? 'Comparação com Benchmark' : 'Benchmark Comparison'}
+          </h3>
+          {isSmallSample && (
+            <span style={{
+              background: '#fef3c7',
+              color: '#92400e',
+              fontSize: '0.6875rem',
+              padding: '0.25rem 0.625rem',
+              borderRadius: '4px',
+              fontWeight: '600',
+              border: '1px solid #fde68a'
+            }}>
+              {isPt ? '⚠️ Leitura direcional' : '⚠️ Directional reading'}
+            </span>
+          )}
+        </div>
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
+          gap: '0.625rem',
+          marginBottom: '0.875rem'
+        }}>
+          {[
+            { label: isPt ? 'Média' : 'Average', value: avg, accent: false },
+            { label: isPt ? 'Mediana' : 'Median', value: median, accent: false },
+            { label: isPt ? 'Faixa inferior' : 'Lower range', value: lowerBound, accent: false },
+            { label: isPt ? 'Faixa superior' : 'Upper range', value: upperBound, accent: false },
+            { label: isPt ? 'Topo da amostra' : 'Top', value: top, accent: true }
+          ].map((card, i) => (
+            <div key={i} style={{
+              background: card.accent ? '#ecfdf5' : '#f9fafb',
+              border: `1px solid ${card.accent ? '#a7f3d0' : '#e5e7eb'}`,
+              borderRadius: '8px',
+              padding: '0.875rem',
+              textAlign: 'center'
+            }}>
+              <div style={{ fontSize: '0.6875rem', color: card.accent ? '#065f46' : '#6b7280', fontWeight: '600', marginBottom: '0.25rem' }}>
+                {card.label}
+              </div>
+              <div style={{ fontSize: '1.375rem', fontWeight: '700', color: card.accent ? '#065f46' : '#1f2937' }}>
+                {card.value.toFixed(2)}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div style={{ fontSize: '0.75rem', color: '#6b7280', fontStyle: 'italic' }}>
+          {isPt 
+            ? `Amostra atual: ${sampleSize} ${sampleSize === 1 ? 'avaliação' : 'avaliações'}.${isSmallSample ? ' Esta comparação deve ser interpretada como referência direcional.' : ''}`
+            : `Current sample: ${sampleSize} assessment${sampleSize === 1 ? '' : 's'}.${isSmallSample ? ' This comparison should be interpreted as directional reference.' : ''}`}
+        </div>
+      </div>
+      
+      {/* ==================== 5. RÉGUA DE MATURIDADE ==================== */}
+      <div style={{
+        background: 'white',
+        border: '1px solid #e5e7eb',
+        borderRadius: '12px',
+        padding: '1.5rem',
+        marginBottom: '1.5rem'
+      }}>
+        <h3 style={{ margin: '0 0 1.25rem 0', fontSize: '1.125rem', color: '#1f2937', fontWeight: '600' }}>
+          {isPt ? 'Sua posição na régua de maturidade' : 'Your position on the maturity ruler'}
+        </h3>
+        <div style={{ position: 'relative', height: '80px', margin: '1rem 1rem 1.5rem' }}>
+          {/* Gradient bar */}
+          <div style={{
+            position: 'absolute',
+            top: '36px',
+            left: 0,
+            right: 0,
+            height: '10px',
+            background: 'linear-gradient(to right, #fee2e2 0%, #fecaca 16.66%, #fef3c7 33.33%, #d1fae5 50%, #a7f3d0 66.66%, #6ee7b7 83.33%, #34d399 100%)',
+            borderRadius: '5px'
+          }} />
+          {/* Tick marks */}
+          {[0, 1, 2, 3, 4, 5].map(n => (
+            <div key={n} style={{
+              position: 'absolute',
+              top: '32px',
+              left: `${(n / 5) * 100}%`,
+              width: '2px',
+              height: '18px',
+              background: '#9ca3af',
+              transform: 'translateX(-50%)'
+            }} />
+          ))}
+          {/* "Sua organização" marker */}
+          <div style={{
+            position: 'absolute',
+            top: '4px',
+            left: `${Math.min(100, Math.max(0, (currentScore / 5) * 100))}%`,
+            transform: 'translateX(-50%)',
+            textAlign: 'center'
+          }}>
+            <div style={{
+              background: '#632CA6',
+              color: 'white',
+              fontSize: '0.6875rem',
+              padding: '0.25rem 0.5rem',
+              borderRadius: '4px',
+              fontWeight: '600',
+              whiteSpace: 'nowrap',
+              boxShadow: '0 2px 4px rgba(99,44,166,0.3)'
+            }}>
+              {isPt ? 'Sua organização' : 'Your organization'} • {currentScore.toFixed(2)}
+            </div>
+            <div style={{
+              width: 0,
+              height: 0,
+              borderLeft: '6px solid transparent',
+              borderRight: '6px solid transparent',
+              borderTop: '7px solid #632CA6',
+              margin: '0 auto'
+            }} />
+          </div>
+          {/* Labels */}
+          <div style={{
+            position: 'absolute',
+            bottom: 0,
+            left: 0,
+            right: 0,
+            display: 'flex',
+            justifyContent: 'space-between',
+            fontSize: '0.6875rem',
+            color: '#6b7280'
+          }}>
+            {levelLabels.map(l => (
+              <div key={l.num} style={{ textAlign: 'center', flex: '0 0 16.66%' }}>
+                <div style={{ fontWeight: '600' }}>{isPt ? `Nv ${l.num}` : `L${l.num}`}</div>
+                <div style={{ fontSize: '0.625rem', marginTop: '0.125rem' }}>{l.name}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div style={{
+          fontSize: '0.875rem',
+          color: '#374151',
+          background: '#f9fafb',
+          padding: '0.875rem 1rem',
+          borderRadius: '6px',
+          lineHeight: 1.55
+        }}>
+          {isPt 
+            ? 'Sua organização está posicionada na faixa intermediária da amostra. O principal desafio agora não é criar mais sinais isolados, e sim integrar visões, priorizar serviços críticos e transformar monitoramento em governança operacional.'
+            : 'Your organization is positioned in the mid-range of the sample. The main challenge now is not to create more isolated signals, but to integrate views, prioritize critical services, and transform monitoring into operational governance.'}
+        </div>
+      </div>
+      
+      {/* ==================== 6. MATURIDADE POR DIMENSÃO ==================== */}
+      <div style={{
+        background: 'white',
+        border: '1px solid #e5e7eb',
+        borderRadius: '12px',
+        padding: '1.5rem',
+        marginBottom: '1.5rem'
+      }}>
+        <h3 style={{ margin: '0 0 1.25rem 0', fontSize: '1.125rem', color: '#1f2937', fontWeight: '600' }}>
+          {isPt ? 'Maturidade por Dimensão' : 'Maturity by Dimension'}
+        </h3>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          {dimensionData.map(d => {
+            const pct = (d.score / 5) * 100;
+            const color = d.score >= 3.5 ? '#059669' : d.score >= 2.0 ? '#f59e0b' : '#dc2626';
+            const interpretation = d.score >= 3.5 
+              ? (isPt ? 'Boa base, com espaço para excelência.' : 'Good base, room for excellence.')
+              : d.score >= 2.0 
+              ? (isPt ? 'Em construção. Há lacunas estruturais a resolver.' : 'Under construction. Structural gaps to resolve.')
+              : (isPt ? 'Crítico. Requer atenção imediata.' : 'Critical. Requires immediate attention.');
+            return (
+              <div key={d.key}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.375rem' }}>
+                  <div>
+                    <div style={{ fontSize: '0.9375rem', fontWeight: '600', color: '#1f2937' }}>
+                      {d.label}
+                    </div>
+                    <div style={{ fontSize: '0.8125rem', color: '#6b7280', marginTop: '0.125rem' }}>
+                      {interpretation}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: '1.25rem', fontWeight: '700', color, marginLeft: '1rem' }}>
+                    {d.score.toFixed(1)}
+                  </div>
+                </div>
+                <div style={{ background: '#f3f4f6', height: '6px', borderRadius: '3px', overflow: 'hidden' }}>
+                  <div style={{
+                    background: color,
+                    height: '100%',
+                    width: `${pct}%`,
+                    transition: 'width 0.3s'
+                  }} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div style={{
+          marginTop: '1.25rem',
+          paddingTop: '1rem',
+          borderTop: '1px solid #f3f4f6',
+          fontSize: '0.875rem',
+          color: '#1f2937',
+          fontStyle: 'italic'
+        }}>
+          {isPt 
+            ? `A maior oportunidade de evolução está em: ${weakestDims.map(d => d.label).join(', ')}.`
+            : `The biggest evolution opportunity is in: ${weakestDims.map(d => d.label).join(', ')}.`}
+        </div>
+      </div>
+      
+      {/* ==================== 7. GAPS PRIORITÁRIOS ==================== */}
+      <div style={{
+        background: 'white',
+        border: '1px solid #e5e7eb',
+        borderRadius: '12px',
+        padding: '1.5rem',
+        marginBottom: '1.5rem'
+      }}>
+        <h3 style={{ margin: '0 0 1rem 0', fontSize: '1.125rem', color: '#1f2937', fontWeight: '600' }}>
+          {isPt ? 'Principais Gaps para Evolução' : 'Main Gaps for Evolution'}
+        </h3>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+          <thead>
+            <tr style={{ borderBottom: '1px solid #e5e7eb' }}>
+              <th style={{ textAlign: 'left', padding: '0.625rem 0.5rem', color: '#6b7280', fontWeight: '600', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                {isPt ? 'Gap' : 'Gap'}
+              </th>
+              <th style={{ textAlign: 'left', padding: '0.625rem 0.5rem', color: '#6b7280', fontWeight: '600', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                {isPt ? 'Impacto' : 'Impact'}
+              </th>
+              <th style={{ textAlign: 'center', padding: '0.625rem 0.5rem', color: '#6b7280', fontWeight: '600', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em', width: '110px' }}>
+                {isPt ? 'Prioridade' : 'Priority'}
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {prioritizedGaps.map((g, i) => (
+              <tr key={i} style={{ borderBottom: i < prioritizedGaps.length - 1 ? '1px solid #f3f4f6' : 'none' }}>
+                <td style={{ padding: '0.875rem 0.5rem', color: '#1f2937', fontWeight: '500' }}>
+                  {g.gap}
+                </td>
+                <td style={{ padding: '0.875rem 0.5rem', color: '#6b7280' }}>
+                  {g.impact}
+                </td>
+                <td style={{ padding: '0.875rem 0.5rem', textAlign: 'center' }}>
+                  <span style={{
+                    background: g.priority === 'Alta' || g.priority === 'High' ? '#fee2e2' : '#fef3c7',
+                    color: g.priority === 'Alta' || g.priority === 'High' ? '#991b1b' : '#92400e',
+                    padding: '0.25rem 0.625rem',
+                    borderRadius: '4px',
+                    fontSize: '0.75rem',
+                    fontWeight: '600'
+                  }}>
+                    {g.priority}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div style={{
+          marginTop: '1.25rem',
+          fontSize: '0.875rem',
+          color: '#1f2937',
+          fontStyle: 'italic'
+        }}>
+          {isPt 
+            ? 'A evolução de maturidade depende menos de expandir volume de monitoração e mais de elevar consistência, correlação e governança.'
+            : 'Maturity evolution depends less on expanding monitoring volume and more on raising consistency, correlation, and governance.'}
+        </div>
+      </div>
+      
+      {/* ==================== 8. RECOMENDAÇÕES PRIORITÁRIAS ==================== */}
+      {recsToShow.length > 0 && (
+        <div style={{
+          background: 'white',
+          border: '1px solid #e5e7eb',
+          borderRadius: '12px',
+          padding: '1.5rem',
+          marginBottom: '1.5rem'
+        }}>
+          <h3 style={{ margin: '0 0 1rem 0', fontSize: '1.125rem', color: '#1f2937', fontWeight: '600' }}>
+            {isPt ? 'Recomendações Prioritárias' : 'Priority Recommendations'}
+          </h3>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+            <thead>
+              <tr style={{ borderBottom: '1px solid #e5e7eb' }}>
+                <th style={{ textAlign: 'left', padding: '0.625rem 0.5rem', color: '#6b7280', fontWeight: '600', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  {isPt ? 'Recomendação' : 'Recommendation'}
+                </th>
+                <th style={{ textAlign: 'left', padding: '0.625rem 0.5rem', color: '#6b7280', fontWeight: '600', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  {isPt ? 'Por que importa' : 'Why it matters'}
+                </th>
+                <th style={{ textAlign: 'left', padding: '0.625rem 0.5rem', color: '#6b7280', fontWeight: '600', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em', width: '160px' }}>
+                  Owner
+                </th>
+                <th style={{ textAlign: 'center', padding: '0.625rem 0.5rem', color: '#6b7280', fontWeight: '600', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em', width: '90px' }}>
+                  {isPt ? 'Prazo' : 'Timeframe'}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {recsToShow.map((r, i) => (
+                <tr key={i} style={{ borderBottom: i < recsToShow.length - 1 ? '1px solid #f3f4f6' : 'none' }}>
+                  <td style={{ padding: '0.875rem 0.5rem', color: '#1f2937', fontWeight: '500' }}>
+                    {r.title}
+                  </td>
+                  <td style={{ padding: '0.875rem 0.5rem', color: '#6b7280' }}>
+                    {r.why}
+                  </td>
+                  <td style={{ padding: '0.875rem 0.5rem', color: '#6b7280', fontSize: '0.8125rem' }}>
+                    {r.owner}
+                  </td>
+                  <td style={{ padding: '0.875rem 0.5rem', textAlign: 'center', color: '#6b7280', fontSize: '0.8125rem' }}>
+                    {r.timeframe}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div style={{
+            marginTop: '1.25rem',
+            fontSize: '0.875rem',
+            color: '#1f2937',
+            fontStyle: 'italic'
+          }}>
+            {isPt 
+              ? 'O próximo salto de maturidade não depende apenas de instrumentação. Depende de foco, padrão e governança.'
+              : 'The next maturity leap does not depend only on instrumentation. It depends on focus, standard, and governance.'}
+          </div>
+        </div>
+      )}
+      
+      {/* ==================== 9. EVOLUÇÃO ==================== */}
+      <div style={{
+        background: 'white',
+        border: '1px solid #e5e7eb',
+        borderRadius: '12px',
+        padding: '1.5rem',
+        marginBottom: '1.5rem'
+      }}>
+        <h3 style={{ margin: '0 0 0.5rem 0', fontSize: '1.125rem', color: '#1f2937', fontWeight: '600' }}>
+          {isPt ? 'Evolução da Maturidade' : 'Maturity Evolution'}
+        </h3>
+        <p style={{ margin: '0 0 1.25rem 0', fontSize: '0.8125rem', color: '#6b7280' }}>
+          {isPt 
+            ? 'A maturidade deve ser acompanhada como tendência, não apenas como fotografia.'
+            : 'Maturity should be tracked as a trend, not just a snapshot.'}
+        </p>
+        {previousScore !== null ? (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem' }}>
+            <div style={{ textAlign: 'center', padding: '1rem', background: '#f9fafb', borderRadius: '8px' }}>
+              <div style={{ fontSize: '0.75rem', color: '#6b7280', fontWeight: '600', marginBottom: '0.375rem' }}>
+                {isPt ? 'Avaliação anterior' : 'Previous assessment'}
+              </div>
+              <div style={{ fontSize: '1.75rem', fontWeight: '700', color: '#6b7280' }}>
+                {previousScore.toFixed(2)}
+              </div>
+            </div>
+            <div style={{ textAlign: 'center', padding: '1rem', background: '#faf5ff', borderRadius: '8px', border: '2px solid #632CA6' }}>
+              <div style={{ fontSize: '0.75rem', color: '#632CA6', fontWeight: '600', marginBottom: '0.375rem' }}>
+                {isPt ? 'Avaliação atual' : 'Current assessment'}
+              </div>
+              <div style={{ fontSize: '1.75rem', fontWeight: '700', color: '#632CA6' }}>
+                {currentScore.toFixed(2)}
+              </div>
+            </div>
+            <div style={{ textAlign: 'center', padding: '1rem', background: '#ecfdf5', borderRadius: '8px' }}>
+              <div style={{ fontSize: '0.75rem', color: '#065f46', fontWeight: '600', marginBottom: '0.375rem' }}>
+                {isPt ? 'Meta próxima avaliação' : 'Target next assessment'}
+              </div>
+              <div style={{ fontSize: '1.75rem', fontWeight: '700', color: '#059669' }}>
+                {Math.min(5, currentScore + 0.5).toFixed(2)}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div style={{
+            background: '#fef3c7',
+            border: '1px solid #fde68a',
+            borderRadius: '6px',
+            padding: '0.875rem 1rem',
+            fontSize: '0.875rem',
+            color: '#92400e',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem'
+          }}>
+            <span style={{ fontSize: '1rem' }}>🆕</span>
+            <span>{isPt 
+              ? 'Esta é a primeira avaliação desta organização. A próxima avaliação permitirá acompanhar evolução.'
+              : 'This is the first assessment for this organization. The next assessment will allow tracking evolution.'}
+            </span>
+          </div>
+        )}
+        {previousScore !== null && (
+          <div style={{
+            marginTop: '1.25rem',
+            fontSize: '0.875rem',
+            color: '#1f2937',
+            fontStyle: 'italic'
+          }}>
+            {scoreDelta > 0 
+              ? (isPt 
+                ? 'A organização está evoluindo na direção correta. O próximo ciclo deve focar em transformar monitoramento distribuído em observabilidade orientada a serviço e decisão.'
+                : 'The organization is evolving in the right direction. The next cycle should focus on transforming distributed monitoring into service-oriented observability.')
+              : (isPt 
+                ? 'A maturidade regrediu desde a avaliação anterior. Recomendamos uma revisão das causas antes de definir metas para o próximo ciclo.'
+                : 'Maturity regressed since the previous assessment. We recommend reviewing the causes before defining goals for the next cycle.')
+            }
+          </div>
+        )}
+      </div>
+      
+      {/* ==================== 10. SIMULADOR (DE-EMPHASIZED) ==================== */}
+      <BenchmarkSimulator scores={sampleScores} sampleSize={sampleSize} isPt={isPt} />
+      
+      {/* ==================== 11. RODAPÉ METODOLÓGICO ==================== */}
+      <div style={{
+        background: '#f9fafb',
+        border: '1px solid #e5e7eb',
+        borderRadius: '8px',
+        padding: '1.25rem',
+        marginTop: '1.5rem',
+        fontSize: '0.8125rem',
+        color: '#6b7280',
+        lineHeight: 1.6
+      }}>
+        <div style={{ fontWeight: '600', color: '#374151', marginBottom: '0.5rem' }}>
+          {isPt ? 'Sobre esta análise' : 'About this analysis'}
+        </div>
+        <p style={{ margin: '0 0 0.75rem 0' }}>
+          {isPt 
+            ? 'Esta avaliação considera critérios de maturidade relacionados a monitoramento, observabilidade ponta a ponta, governança, padronização e conexão com impacto operacional. Os resultados devem ser interpretados em conjunto com contexto organizacional, arquitetura e criticidade dos serviços avaliados.'
+            : 'This assessment considers maturity criteria related to monitoring, end-to-end observability, governance, standardization, and connection to operational impact. Results should be interpreted together with organizational context, architecture, and criticality of evaluated services.'}
+        </p>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem', marginTop: '0.75rem', fontSize: '0.75rem' }}>
+          <div>
+            <div style={{ color: '#9ca3af', fontWeight: '600' }}>{isPt ? 'Tamanho da amostra' : 'Sample size'}</div>
+            <div style={{ color: '#374151' }}>{sampleSize} {isPt ? 'avaliações' : 'assessments'}</div>
+          </div>
+          <div>
+            <div style={{ color: '#9ca3af', fontWeight: '600' }}>{isPt ? 'Última atualização' : 'Last update'}</div>
+            <div style={{ color: '#374151' }}>
+              {latest?.date ? new Date(latest.date).toLocaleDateString(t.locale) : '—'}
+            </div>
+          </div>
+          <div>
+            <div style={{ color: '#9ca3af', fontWeight: '600' }}>{isPt ? 'Coorte' : 'Cohort'}</div>
+            <div style={{ color: '#374151' }}>{isPt ? 'Amostra geral disponível' : 'General sample available'}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// v41: BenchmarkSimulator — de-emphasized accordion-style block
+// ============================================================================
+function BenchmarkSimulator({ scores, sampleSize, isPt }) {
+  const [expanded, setExpanded] = useState(false);
+  const [simulatedScore, setSimulatedScore] = useState('2.50');
+  
+  const sortedScores = useMemo(() => [...scores].sort((a, b) => a - b), [scores]);
+  
+  const computePercentile = (score) => {
+    const num = parseFloat(score);
+    if (isNaN(num) || sortedScores.length === 0) return null;
+    const lower = sortedScores.filter(s => s < num).length;
+    return Math.round((lower / sortedScores.length) * 100);
+  };
+  
+  const simPercentile = computePercentile(simulatedScore);
+  
+  return (
+    <div style={{
+      background: '#f9fafb',
+      border: '1px solid #e5e7eb',
+      borderRadius: '8px',
+      marginBottom: '1rem',
+      overflow: 'hidden'
+    }}>
+      <button
+        onClick={() => setExpanded(!expanded)}
+        style={{
+          width: '100%',
+          padding: '0.875rem 1.25rem',
+          border: 'none',
+          background: 'transparent',
+          textAlign: 'left',
+          cursor: 'pointer',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          fontSize: '0.875rem',
+          color: '#6b7280',
+          fontWeight: '500'
+        }}
+      >
+        <span>
+          <span style={{ marginRight: '0.5rem', color: '#9ca3af' }}>
+            {expanded ? '▾' : '▸'}
+          </span>
+          {isPt ? 'Simulador de Percentil' : 'Percentile Simulator'}
+          <span style={{ marginLeft: '0.5rem', color: '#9ca3af', fontWeight: '400', fontSize: '0.75rem', fontStyle: 'italic' }}>
+            ({isPt ? 'apoio exploratório' : 'exploratory tool'})
+          </span>
+        </span>
+      </button>
+      {expanded && (
+        <div style={{ padding: '0 1.25rem 1.25rem', borderTop: '1px solid #e5e7eb' }}>
+          <p style={{ fontSize: '0.8125rem', color: '#6b7280', margin: '1rem 0', lineHeight: 1.5 }}>
+            {isPt 
+              ? 'Digite um score para simular sua posição relativa no benchmark atual.'
+              : 'Enter a score to simulate its relative position in the current benchmark.'}
+          </p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+            <input
+              type="number"
+              min="0"
+              max="5"
+              step="0.01"
+              value={simulatedScore}
+              onChange={(e) => setSimulatedScore(e.target.value)}
+              style={{
+                padding: '0.5rem 0.75rem',
+                border: '1px solid #d1d5db',
+                borderRadius: '6px',
+                fontSize: '0.9375rem',
+                width: '100px'
+              }}
+            />
+            <span style={{ fontSize: '0.875rem', color: '#6b7280' }}>→</span>
+            {simPercentile !== null ? (
+              <span style={{ fontSize: '0.9375rem', color: '#1f2937' }}>
+                <strong>P{simPercentile}</strong>
+                <span style={{ color: '#6b7280', marginLeft: '0.5rem' }}>
+                  {isPt ? `(de ${sampleSize} avaliações)` : `(of ${sampleSize} assessments)`}
+                </span>
+              </span>
+            ) : (
+              <span style={{ fontSize: '0.875rem', color: '#dc2626' }}>
+                {isPt ? 'Score inválido' : 'Invalid score'}
+              </span>
+            )}
+          </div>
+          <p style={{ fontSize: '0.75rem', color: '#9ca3af', margin: '1rem 0 0 0', fontStyle: 'italic' }}>
+            {isPt 
+              ? 'Use este recurso como apoio exploratório. Para análise executiva, priorize score atual, evolução e gaps prioritários.'
+              : 'Use this resource as exploratory support. For executive analysis, prioritize current score, evolution, and priority gaps.'}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BenchmarksView({ assessments, customers, t }) {
   if (assessments.length === 0) return <div>{t.insufficientData}</div>;
 
