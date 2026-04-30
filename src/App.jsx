@@ -2507,67 +2507,108 @@ function getMetricForDimension(dim, data, lang) {
   return metricMap[dim] || null;
 }
 
-// Generate suggested checkpoints based on the item's nature.
-// These are starting points — CSM edits freely.
-function generateCheckpointsForItem(dimension, lang) {
+// v40-fix4: Generate checkpoints derived STRUCTURALLY from the recommendation
+// itself (rationale, owner, expectedOutcome) instead of from regex pattern
+// matching on the title. Pattern matching produced identical checkpoints
+// when 2 items shared a keyword (or worse: fell into the generic fallback).
+//
+// Each recommendation gives us:
+//   - title:           the action ("Configure recipients...")
+//   - rationale:       the WHY with concrete numbers ("519 monitors without...")
+//   - owner:           the WHO ("SRE / Platform Team")
+//   - expectedOutcome: the FINAL TARGET ("Alerts reach responsible teams...")
+//
+// We turn these into a 4-step workflow that's specific to each item.
+function generateCheckpointsForItem(dimension, lang, recTitle = '', data = null, rec = null) {
   const isPt = lang === 'pt';
-  const checkpointsByDim = {
-    alerting: isPt ? [
-      'Inventariar monitores sem destinatário',
-      'Definir owners por domínio/serviço',
-      'Configurar recipients em monitores prioritários',
-      'Validar entregabilidade dos canais'
-    ] : [
-      'Inventory monitors without recipients',
-      'Define owners per domain/service',
-      'Configure recipients on priority monitors',
-      'Validate channel deliverability'
-    ],
-    quality: isPt ? [
-      'Mapear serviços com baixa correlação',
-      'Implementar trace_id propagation nos serviços críticos',
-      'Validar correlação no Datadog UI'
-    ] : [
-      'Map services with low correlation',
-      'Implement trace_id propagation in critical services',
-      'Validate correlation in Datadog UI'
-    ],
-    governance: isPt ? [
-      'Definir taxonomia de tags (env, service, version)',
-      'Aplicar tags via configuração de agent',
-      'Validar cobertura por host'
-    ] : [
-      'Define tag taxonomy (env, service, version)',
-      'Apply tags via agent configuration',
-      'Validate coverage per host'
-    ],
-    adoption: isPt ? [
-      'Identificar champions internos',
-      'Agendar treinamento Datadog Fundamentals',
-      'Criar dashboards customizados por time'
-    ] : [
-      'Identify internal champions',
-      'Schedule Datadog Fundamentals training',
-      'Create team-customized dashboards'
-    ],
-    cost: isPt ? [
-      'Analisar volume de logs por serviço',
-      'Configurar exclusion filters em logs sem valor',
-      'Documentar economia mensal'
-    ] : [
-      'Analyze log volume per service',
-      'Configure exclusion filters on low-value logs',
-      'Document monthly savings'
-    ]
-  };
   
-  const titles = checkpointsByDim[dimension] || [];
-  return titles.map(title => ({
+  const cp = (title) => ({
     id: generatePlanItemId(),
     title,
     done: false,
     completedAt: null
-  }));
+  });
+  
+  // If we have the full recommendation object, use the structural approach.
+  // This gives unique checkpoints per item — no two items share the same set.
+  if (rec) {
+    const titles = [];
+    const rationale = rec.rationale || '';
+    const owner = rec.owner || (isPt ? 'time responsável' : 'responsible team');
+    const expectedOutcome = rec.expectedOutcome || '';
+    const recAction = rec.title || recTitle || '';
+    
+    // Step 1 — Diagnose: surface the concrete numbers from rationale
+    if (rationale) {
+      titles.push(isPt
+        ? `Diagnosticar a situação atual: ${rationale}`
+        : `Diagnose current state: ${rationale}`);
+    } else {
+      titles.push(isPt
+        ? `Mapear gaps específicos relacionados a "${recAction}"`
+        : `Map specific gaps related to "${recAction}"`);
+    }
+    
+    // Step 2 — Assign owner & plan
+    titles.push(isPt
+      ? `Alinhar com ${owner} e definir plano de execução`
+      : `Align with ${owner} and define execution plan`);
+    
+    // Step 3 — Execute: the recommendation itself as the action
+    titles.push(isPt
+      ? `Executar: ${recAction}`
+      : `Execute: ${recAction}`);
+    
+    // Step 4 — Validate against expectedOutcome (the success criterion)
+    if (expectedOutcome) {
+      titles.push(isPt
+        ? `Validar resultado: ${expectedOutcome}`
+        : `Validate outcome: ${expectedOutcome}`);
+    } else {
+      titles.push(isPt
+        ? 'Validar que a melhoria foi aplicada e medir impacto'
+        : 'Validate the improvement was applied and measure impact');
+    }
+    
+    return titles.map(cp);
+  }
+  
+  // ============= FALLBACK (manual items, no rec available) =============
+  // Generic but still useful 3-step workflow.
+  const titles = [];
+  
+  if (isPt) {
+    titles.push(`Mapear situação atual da dimensão ${dimensionLabelPt(dimension)}`);
+    titles.push('Definir plano de ação concreto e responsável');
+    titles.push('Executar e validar resultado contra a meta');
+  } else {
+    titles.push(`Map current state of ${dimensionLabelEn(dimension)} dimension`);
+    titles.push('Define concrete action plan and responsible owner');
+    titles.push('Execute and validate result against target');
+  }
+  
+  return titles.map(cp);
+}
+
+// Helper labels for fallback messages
+function dimensionLabelPt(dim) {
+  return {
+    adoption: 'Adoção',
+    governance: 'Governança Operacional',
+    quality: 'Qualidade da Telemetria',
+    alerting: 'Confiabilidade dos Alertas',
+    cost: 'Governança de Custo'
+  }[dim] || dim;
+}
+
+function dimensionLabelEn(dim) {
+  return {
+    adoption: 'Adoption',
+    governance: 'Operational Governance',
+    quality: 'Telemetry Quality',
+    alerting: 'Alerting Reliability',
+    cost: 'Cost Governance'
+  }[dim] || dim;
 }
 
 // Generate the initial plan from an assessment's recommendations.
@@ -2595,27 +2636,83 @@ function generateInitialActionPlan(customerId, assessment, data, lang) {
     cost: dimScore(dims.cost)
   };
   
+  // v40-fix6: The roadmap.phases[].actions are STRINGS (not objects), so they
+  // lack rationale/owner/expectedOutcome — that's why all checkpoints fell into
+  // the generic fallback. We try to ENRICH each roadmap action by finding a
+  // matching recommendation that has the full structure.
+  const allRecommendations = Array.isArray(assessment.recommendations) 
+    ? assessment.recommendations 
+    : [];
+  
+  // Try to find the full rec for a given action string by fuzzy title match.
+  // Strings come from roadmap (e.g. "Configure recipients on critical monitors")
+  // and we want to find the rec object with that title in `allRecommendations`.
+  const findRecForAction = (actionString, fallbackDimension) => {
+    if (!actionString || !allRecommendations.length) return null;
+    const normalize = (s) => String(s || '').toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const targetWords = new Set(normalize(actionString).split(' ').filter(w => w.length > 3));
+    if (targetWords.size === 0) return null;
+    
+    let bestMatch = null;
+    let bestScore = 0;
+    for (const rec of allRecommendations) {
+      const recTitle = normalize(rec.title || '');
+      const recWords = recTitle.split(' ');
+      let score = 0;
+      for (const w of recWords) {
+        if (targetWords.has(w)) score++;
+      }
+      // Boost if dimension matches
+      if (rec.dimensionImpact === fallbackDimension) score += 2;
+      if (score > bestScore && score >= 2) { // need at least 2 word overlap
+        bestScore = score;
+        bestMatch = rec;
+      }
+    }
+    return bestMatch;
+  };
+  
   // Helper: turn a recommendation into a plan item
   const recToItem = (rec, category, defaultPriority) => {
     if (!rec) return null;
-    const recDim = rec.dimension || rec.category || 'governance';
+    const recDim = rec.dimensionImpact || rec.dimension || rec.category || 'governance';
+    // Resolve title FIRST (used by checkpoints to derive context)
+    const recTitle = rec.title || rec.action || rec.text || (isPt ? 'Ação sem título' : 'Untitled action');
     const targetMetric = getMetricForDimension(recDim, data, lang);
-    const checkpoints = generateCheckpointsForItem(recDim, lang);
+    // v40-fix1: pass title + data so checkpoints reflect what the item actually says
+    // v40-fix4: pass the full `rec` object so checkpoints derive from
+    // rationale + owner + expectedOutcome — guarantees uniqueness per item
+    // (instead of regex-matching the title which produced duplicates).
+    const checkpoints = generateCheckpointsForItem(recDim, lang, recTitle, data, rec);
     
     // Determine priority: if rec has explicit priority, use it.
-    // Otherwise CRITICAL if dim is critical (≤1.5), else HIGH.
-    let priority = rec.priority || defaultPriority;
-    if (!rec.priority && dimToScore[recDim] <= 1.5) priority = 'CRITICAL';
+    // v40-fix6: normalize PT ('CRÍTICA','ALTA') and EN ('CRITICAL','HIGH') 
+    const normalizePriority = (p) => {
+      const upper = String(p || '').toUpperCase();
+      if (upper === 'CRÍTICA' || upper === 'CRITICAL') return 'CRITICAL';
+      if (upper === 'ALTA' || upper === 'HIGH') return 'HIGH';
+      if (upper === 'MÉDIA' || upper === 'MEDIUM') return 'MEDIUM';
+      if (upper === 'BAIXA' || upper === 'LOW') return 'LOW';
+      return null;
+    };
+    let priority = normalizePriority(rec.priority) || defaultPriority;
+    if (!normalizePriority(rec.priority) && dimToScore[recDim] <= 1.5) priority = 'CRITICAL';
+    
+    // v40-fix6: prefer the rec's owner over generic 'Customer Tech'
+    const owner = rec.owner || 'Customer Tech';
     
     return {
       id: generatePlanItemId(),
-      title: rec.title || rec.action || rec.text || (isPt ? 'Ação sem título' : 'Untitled action'),
-      description: rec.description || rec.detail || rec.context || '',
+      title: recTitle,
+      description: rec.description || rec.detail || rec.context || rec.rationale || '',
       dimension: recDim,
       priority,
       category,
       status: 'pending',
-      owner: 'Customer Tech',
+      owner,
       ownerName: '',
       dueDate: null,
       targetMetric,
@@ -2623,43 +2720,58 @@ function generateInitialActionPlan(customerId, assessment, data, lang) {
       progressNotes: [],
       autoGenerated: true,
       sourceRecommendation: rec.id || null,
+      // v40-fix1: track the language at generation time so we can re-render in current UI lang
+      generatedInLang: lang,
       createdAt: new Date().toISOString()
     };
   };
   
-  // 1. Critical actions first (highest priority)
-  if (Array.isArray(classified.criticalActions)) {
-    classified.criticalActions.slice(0, 3).forEach(rec => {
-      const item = recToItem(rec, 'critical', 'CRITICAL');
-      if (item) items.push(item);
-    });
-  }
+  // v40-fix6: classifiedRecommendations only has `quickWins` and `strategic` —
+  // not `criticalActions` / `strategicInitiatives` as the old code assumed.
+  // Pick critical-priority items from quickWins, the rest go as quick wins.
   
-  // 2. Quick wins (next priority)
-  if (Array.isArray(classified.quickWins)) {
-    classified.quickWins.slice(0, 3).forEach(rec => {
-      const item = recToItem(rec, 'quick-win', 'HIGH');
-      if (item) items.push(item);
-    });
-  }
+  const quickWinsAll = Array.isArray(classified.quickWins) ? classified.quickWins : [];
+  const strategicAll = Array.isArray(classified.strategic) ? classified.strategic : [];
   
-  // 3. Strategic initiatives (longer term)
-  if (Array.isArray(classified.strategicInitiatives)) {
-    classified.strategicInitiatives.slice(0, 2).forEach(rec => {
-      const item = recToItem(rec, 'strategic', 'MEDIUM');
-      if (item) items.push(item);
-    });
-  }
+  const isCriticalPriority = (p) => {
+    const upper = String(p || '').toUpperCase();
+    return upper === 'CRITICAL' || upper === 'CRÍTICA';
+  };
   
-  // Fallback: if no classified, use first roadmap phase actions
+  // 1. Critical priority items first (from quickWins or strategic)
+  const criticalRecs = [...quickWinsAll, ...strategicAll].filter(r => isCriticalPriority(r.priority));
+  criticalRecs.slice(0, 3).forEach(rec => {
+    const item = recToItem(rec, 'critical', 'CRITICAL');
+    if (item) items.push(item);
+  });
+  
+  // 2. Non-critical Quick wins
+  quickWinsAll.filter(r => !isCriticalPriority(r.priority)).slice(0, 3).forEach(rec => {
+    const item = recToItem(rec, 'quick-win', 'HIGH');
+    if (item) items.push(item);
+  });
+  
+  // 3. Non-critical Strategic initiatives
+  strategicAll.filter(r => !isCriticalPriority(r.priority)).slice(0, 2).forEach(rec => {
+    const item = recToItem(rec, 'strategic', 'MEDIUM');
+    if (item) items.push(item);
+  });
+  
+  // Fallback: if no classified recommendations, use roadmap phase actions
+  // (these are STRINGS — we enrich them by looking up matching full recs)
   if (items.length === 0 && assessment.roadmap?.phases?.[0]?.actions) {
     const firstPhase = assessment.roadmap.phases[0];
+    const phaseDim = firstPhase.dimensionFocus?.split('+')[0] || 'governance';
     firstPhase.actions.slice(0, 5).forEach(action => {
-      const item = recToItem(
-        { title: action, dimension: firstPhase.dimensionFocus?.split('+')[0] || 'governance' },
-        'roadmap',
-        'HIGH'
-      );
+      // v40-fix6: look up the full recommendation for this action — gives us
+      // rationale, owner, expectedOutcome → richer checkpoints.
+      const matchedRec = findRecForAction(action, phaseDim);
+      const recForItem = matchedRec || { 
+        title: action, 
+        dimension: phaseDim,
+        dimensionImpact: phaseDim
+      };
+      const item = recToItem(recForItem, 'roadmap', 'HIGH');
       if (item) items.push(item);
     });
   }
@@ -12859,6 +12971,16 @@ function ActionPlanTab({ customer, latestAssessment, t, showNotification }) {
   // Edit modal state — null when closed, item object when open (could be new or existing)
   const [editingItem, setEditingItem] = useState(null);
   
+  // v40-fix3: replace browser confirm()/alert() (which can be blocked in iframes
+  // and silently return undefined → the user clicks but nothing visibly happens).
+  // confirmDialog: { message, onConfirm } | null
+  // alertMessage: string | null
+  const [confirmDialog, setConfirmDialog] = useState(null);
+  const [alertMessage, setAlertMessage] = useState(null);
+  
+  // v40-fix5: Modal-based export (iframe sandboxes block blob: URL downloads)
+  const [exportModalContent, setExportModalContent] = useState(null);
+  
   // Confirm dialogs (kept simple — uses window.confirm)
   // Reload plan from storage when customer changes
   useEffect(() => {
@@ -12911,7 +13033,19 @@ function ActionPlanTab({ customer, latestAssessment, t, showNotification }) {
   };
   
   const handleRegenerate = () => {
-    if (!confirm(t.actionPlanConfirmRegenerate)) return;
+    // v40-fix3: was `if (!confirm(...)) return;` — confirm() can be blocked
+    // in sandboxed iframes (Vercel preview, Claude artifacts, etc.) and
+    // silently returns undefined, which made the regenerate button do nothing.
+    setConfirmDialog({
+      message: t.actionPlanConfirmRegenerate,
+      onConfirm: () => {
+        setConfirmDialog(null);
+        doRegenerate();
+      }
+    });
+  };
+  
+  const doRegenerate = () => {
     if (!latestAssessment || !plan) {
       handleGenerateInitialPlan();
       return;
@@ -12955,10 +13089,16 @@ function ActionPlanTab({ customer, latestAssessment, t, showNotification }) {
   
   const handleDeleteItem = (itemId) => {
     if (!plan) return;
-    if (!confirm(t.actionPlanConfirmDelete)) return;
-    const nextItems = plan.items.filter(i => i.id !== itemId);
-    persistPlan({ ...plan, items: nextItems });
-    showNotification(t.actionPlanItemDeleted, 'success');
+    // v40-fix3: same fix as handleRegenerate — confirm() can be blocked silently.
+    setConfirmDialog({
+      message: t.actionPlanConfirmDelete,
+      onConfirm: () => {
+        setConfirmDialog(null);
+        const nextItems = plan.items.filter(i => i.id !== itemId);
+        persistPlan({ ...plan, items: nextItems });
+        showNotification(t.actionPlanItemDeleted, 'success');
+      }
+    });
   };
   
   const handleQuickStatusChange = (itemId, newStatus) => {
@@ -12987,8 +13127,15 @@ function ActionPlanTab({ customer, latestAssessment, t, showNotification }) {
   
   // === Export ===
   
-  const handleExport = () => {
-    if (!plan?.items?.length) return;
+  // v40-fix5: Modal-based export to bypass iframe blob download restrictions.
+  // Sandboxed iframes (Vercel preview, embeds) can block `blob:` URL downloads
+  // with "This content is blocked" — the click on <a download> fails silently
+  // or shows a browser-level error page.
+  // Solution: show the content in a modal with copy + download buttons. Copy
+  // always works (uses execCommand fallback chain). Download tries blob and
+  // falls back to data URL if blob fails.
+  
+  const buildExportMarkdown = () => {
     const lines = [];
     lines.push(`# ${customer.latestAssessment?.teamName || customer.customerId} - ${t.actionPlanTitle}`);
     lines.push('');
@@ -13022,16 +13169,16 @@ function ActionPlanTab({ customer, latestAssessment, t, showNotification }) {
       }
       lines.push('');
     });
-    const md = lines.join('\n');
-    const blob = new Blob([md], { type: 'text/markdown' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
+    return lines.join('\n');
+  };
+  
+  const handleExport = () => {
+    if (!plan?.items?.length) return;
+    const md = buildExportMarkdown();
     const safeName = (customer.latestAssessment?.teamName || customer.customerId)
       .replace(/[^a-z0-9]/gi, '_').toLowerCase();
-    a.download = `action-plan-${safeName}-${new Date().toISOString().slice(0, 10)}.md`;
-    a.click();
-    URL.revokeObjectURL(url);
+    const filename = `action-plan-${safeName}-${new Date().toISOString().slice(0, 10)}.md`;
+    setExportModalContent({ markdown: md, filename });
   };
   
   // === Filters applied ===
@@ -13059,6 +13206,18 @@ function ActionPlanTab({ customer, latestAssessment, t, showNotification }) {
       platformUtilization: latestAssessment.platformUtilization || {}
     };
   }, [latestAssessment]);
+  
+  // v40-fix2: Detect language mismatch on auto-generated items.
+  // IMPORTANT: This useMemo MUST come before any early `return` below — React's
+  // Rules of Hooks demand identical hook order across renders. Putting it after
+  // the `if (!plan) return ...` guard caused React Error #310 because some
+  // renders ran the hook and others didn't.
+  const langMismatchCount = useMemo(() => {
+    if (!plan?.items) return 0;
+    return plan.items.filter(it => 
+      it.autoGenerated && it.generatedInLang && it.generatedInLang !== lang
+    ).length;
+  }, [plan, lang]);
   
   // ====================================================================
   // EMPTY STATE: no plan yet
@@ -13124,6 +13283,48 @@ function ActionPlanTab({ customer, latestAssessment, t, showNotification }) {
   // ====================================================================
   return (
     <div>
+      {/* v40-fix1: Banner shown when CSM switched UI language but plan items are still in old language */}
+      {langMismatchCount > 0 && (
+        <div style={{
+          background: '#fff7ed',
+          border: '1px solid #fdba74',
+          borderLeft: '4px solid #f59e0b',
+          borderRadius: '8px',
+          padding: '0.75rem 1rem',
+          marginBottom: '1rem',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '0.75rem',
+          flexWrap: 'wrap'
+        }}>
+          <div style={{ fontSize: '0.875rem', color: '#92400e', flex: 1 }}>
+            ⚠️ {isPt
+              ? `${langMismatchCount} ${langMismatchCount === 1 ? 'item foi gerado' : 'itens foram gerados'} em outro idioma. Itens editados manualmente serão preservados.`
+              : `${langMismatchCount} ${langMismatchCount === 1 ? 'item was generated' : 'items were generated'} in another language. Manually-edited items will be preserved.`
+            }
+          </div>
+          {latestAssessment && (
+            <button
+              onClick={handleRegenerate}
+              style={{
+                background: '#f59e0b',
+                color: 'white',
+                border: 'none',
+                padding: '0.375rem 0.75rem',
+                borderRadius: '6px',
+                fontSize: '0.8125rem',
+                fontWeight: '600',
+                cursor: 'pointer',
+                flexShrink: 0
+              }}
+            >
+              ↻ {isPt ? 'Regenerar no idioma atual' : 'Regenerate in current language'}
+            </button>
+          )}
+        </div>
+      )}
+      
       {/* Header */}
       <div style={{
         background: 'white',
@@ -13330,6 +13531,267 @@ function ActionPlanTab({ customer, latestAssessment, t, showNotification }) {
           onCancel={() => setEditingItem(null)}
         />
       )}
+      
+      {/* v40-fix3: Custom confirm dialog (replaces window.confirm which gets blocked in iframes) */}
+      {confirmDialog && (
+        <div
+          onClick={() => setConfirmDialog(null)}
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 2100, padding: '2rem'
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: 'white', borderRadius: '12px', padding: '1.5rem',
+              maxWidth: '440px', width: '100%',
+              boxShadow: '0 20px 50px rgba(0,0,0,0.3)'
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.75rem', marginBottom: '1rem' }}>
+              <span style={{ fontSize: '1.5rem' }}>⚠️</span>
+              <p style={{ margin: 0, color: '#1f2937', fontSize: '0.9375rem', lineHeight: '1.5' }}>
+                {confirmDialog.message}
+              </p>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
+              <button
+                onClick={() => setConfirmDialog(null)}
+                style={{
+                  background: 'white', color: '#374151', border: '1px solid #d1d5db',
+                  padding: '0.5rem 1rem', borderRadius: '6px',
+                  fontSize: '0.875rem', fontWeight: '600', cursor: 'pointer'
+                }}
+              >
+                {t.actionPlanCancel}
+              </button>
+              <button
+                onClick={confirmDialog.onConfirm}
+                style={{
+                  background: '#632CA6', color: 'white', border: 'none',
+                  padding: '0.5rem 1rem', borderRadius: '6px',
+                  fontSize: '0.875rem', fontWeight: '600', cursor: 'pointer'
+                }}
+              >
+                {isPt ? 'Continuar' : 'Continue'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* v40-fix5: Export modal — shows content with copy/download options.
+          Works in iframe sandboxes where blob: downloads are blocked. */}
+      {exportModalContent && (
+        <ExportPlanModal
+          content={exportModalContent.markdown}
+          filename={exportModalContent.filename}
+          isPt={isPt}
+          t={t}
+          onClose={() => setExportModalContent(null)}
+          showNotification={showNotification}
+        />
+      )}
+    </div>
+  );
+}
+
+// v40-fix5: Modal that displays the markdown content with multiple ways
+// to get it out of the app — handles iframe sandboxing gracefully.
+function ExportPlanModal({ content, filename, isPt, t, onClose, showNotification }) {
+  const textareaRef = useRef(null);
+  const [copyState, setCopyState] = useState('idle'); // idle | copied | failed
+  
+  // Try multiple copy strategies. Modern clipboard API may be unavailable
+  // in iframes; execCommand is the universal fallback.
+  const handleCopy = async () => {
+    try {
+      // Strategy 1: modern Clipboard API
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(content);
+        setCopyState('copied');
+        showNotification(isPt ? 'Copiado para a área de transferência' : 'Copied to clipboard', 'success');
+        setTimeout(() => setCopyState('idle'), 2500);
+        return;
+      }
+      // Strategy 2: execCommand fallback
+      if (textareaRef.current) {
+        textareaRef.current.select();
+        textareaRef.current.setSelectionRange(0, content.length);
+        const ok = document.execCommand('copy');
+        if (ok) {
+          setCopyState('copied');
+          showNotification(isPt ? 'Copiado para a área de transferência' : 'Copied to clipboard', 'success');
+          setTimeout(() => setCopyState('idle'), 2500);
+          return;
+        }
+      }
+      throw new Error('No copy method available');
+    } catch (e) {
+      console.warn('[ExportPlan] Copy failed:', e);
+      setCopyState('failed');
+      showNotification(
+        isPt ? 'Falha ao copiar — selecione o texto manualmente' : 'Copy failed — select the text manually',
+        'error'
+      );
+      setTimeout(() => setCopyState('idle'), 2500);
+    }
+  };
+  
+  // Try blob download — if iframe blocks it, the user already has the
+  // content in the textarea and can copy from there.
+  const handleDownload = () => {
+    try {
+      const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      // Free the URL after a tick (some browsers need the click to fully process)
+      setTimeout(() => URL.revokeObjectURL(url), 100);
+      showNotification(isPt ? 'Download iniciado' : 'Download started', 'success');
+    } catch (e) {
+      console.warn('[ExportPlan] Download failed:', e);
+      showNotification(
+        isPt ? 'Download bloqueado neste ambiente — use Copiar' : 'Download blocked in this environment — use Copy instead',
+        'error'
+      );
+    }
+  };
+  
+  // Select all text on click for easy manual copy
+  const handleTextareaClick = () => {
+    if (textareaRef.current) {
+      textareaRef.current.select();
+    }
+  };
+  
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+        background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        zIndex: 2200, padding: '2rem'
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: 'white', borderRadius: '12px', padding: '1.5rem',
+          maxWidth: '720px', width: '100%', maxHeight: '85vh',
+          display: 'flex', flexDirection: 'column',
+          boxShadow: '0 20px 50px rgba(0,0,0,0.3)'
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem', gap: '1rem' }}>
+          <div>
+            <h2 style={{ margin: '0 0 0.25rem 0', color: '#1f2937', fontSize: '1.25rem' }}>
+              📤 {isPt ? 'Exportar Plano de Ação' : 'Export Action Plan'}
+            </h2>
+            <p style={{ margin: 0, color: '#6b7280', fontSize: '0.8125rem' }}>
+              {isPt 
+                ? 'Copie o conteúdo abaixo ou tente baixar como arquivo .md'
+                : 'Copy the content below or try downloading as .md file'}
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              background: 'transparent', border: 'none', color: '#6b7280',
+              fontSize: '1.5rem', cursor: 'pointer', padding: '0.25rem',
+              lineHeight: 1
+            }}
+            title={isPt ? 'Fechar' : 'Close'}
+          >
+            ×
+          </button>
+        </div>
+        
+        {/* Content textarea (selectable, scrollable) */}
+        <textarea
+          ref={textareaRef}
+          value={content}
+          readOnly
+          onClick={handleTextareaClick}
+          style={{
+            flex: 1,
+            minHeight: '300px',
+            padding: '0.75rem',
+            border: '1px solid #d1d5db',
+            borderRadius: '6px',
+            fontSize: '0.8125rem',
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+            resize: 'vertical',
+            background: '#fafafa',
+            color: '#1f2937',
+            marginBottom: '1rem',
+            boxSizing: 'border-box',
+            width: '100%'
+          }}
+        />
+        
+        {/* File info */}
+        <div style={{
+          fontSize: '0.75rem',
+          color: '#6b7280',
+          marginBottom: '1rem',
+          fontFamily: 'ui-monospace, monospace',
+          background: '#f9fafb',
+          padding: '0.5rem 0.75rem',
+          borderRadius: '4px',
+          border: '1px solid #e5e7eb'
+        }}>
+          📄 {filename} • {content.length.toLocaleString()} {isPt ? 'caracteres' : 'characters'}
+        </div>
+        
+        {/* Actions */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <button
+            onClick={onClose}
+            style={{
+              background: 'white', color: '#374151', border: '1px solid #d1d5db',
+              padding: '0.5rem 1rem', borderRadius: '6px',
+              fontSize: '0.875rem', fontWeight: '600', cursor: 'pointer'
+            }}
+          >
+            {t.actionPlanCancel}
+          </button>
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <button
+              onClick={handleDownload}
+              style={{
+                background: 'white', color: '#632CA6', border: '1px solid #632CA6',
+                padding: '0.5rem 1rem', borderRadius: '6px',
+                fontSize: '0.875rem', fontWeight: '600', cursor: 'pointer'
+              }}
+            >
+              ⬇ {isPt ? 'Baixar .md' : 'Download .md'}
+            </button>
+            <button
+              onClick={handleCopy}
+              style={{
+                background: copyState === 'copied' ? '#059669' : '#632CA6',
+                color: 'white', border: 'none',
+                padding: '0.5rem 1rem', borderRadius: '6px',
+                fontSize: '0.875rem', fontWeight: '600', cursor: 'pointer',
+                transition: 'background 0.2s'
+              }}
+            >
+              {copyState === 'copied' 
+                ? (isPt ? '✓ Copiado!' : '✓ Copied!')
+                : (isPt ? '📋 Copiar tudo' : '📋 Copy all')}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -13612,6 +14074,8 @@ function ActionPlanItemEditor({ item, t, isPt, latestData, onSave, onCancel }) {
   const [draft, setDraft] = useState({ ...item });
   const [newCheckpointTitle, setNewCheckpointTitle] = useState('');
   const [newNoteText, setNewNoteText] = useState('');
+  // v40-fix3: inline validation error (was alert() which can be blocked silently)
+  const [validationError, setValidationError] = useState(null);
   
   const update = (key, value) => setDraft(d => ({ ...d, [key]: value }));
   
@@ -13651,9 +14115,10 @@ function ActionPlanItemEditor({ item, t, isPt, latestData, onSave, onCancel }) {
   
   const handleSave = () => {
     if (!draft.title?.trim()) {
-      alert(isPt ? 'Título é obrigatório' : 'Title is required');
+      setValidationError(isPt ? 'Título é obrigatório' : 'Title is required');
       return;
     }
+    setValidationError(null);
     const { _isNew, ...cleanDraft } = draft;
     onSave(cleanDraft);
   };
@@ -13697,12 +14162,21 @@ function ActionPlanItemEditor({ item, t, isPt, latestData, onSave, onCancel }) {
           <input
             type="text"
             value={draft.title || ''}
-            onChange={(e) => update('title', e.target.value)}
+            onChange={(e) => {
+              update('title', e.target.value);
+              if (validationError) setValidationError(null);
+            }}
             style={{
-              width: '100%', padding: '0.5rem', border: '1px solid #d1d5db',
+              width: '100%', padding: '0.5rem',
+              border: validationError ? '1px solid #dc2626' : '1px solid #d1d5db',
               borderRadius: '6px', fontSize: '0.875rem', boxSizing: 'border-box'
             }}
           />
+          {validationError && (
+            <div style={{ color: '#dc2626', fontSize: '0.75rem', marginTop: '0.25rem' }}>
+              {validationError}
+            </div>
+          )}
         </div>
         
         {/* Description */}
