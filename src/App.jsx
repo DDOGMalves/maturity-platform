@@ -15508,6 +15508,48 @@ function _xmlEscape(s) {
     .replace(/>/g, '&gt;');
 }
 
+// v45.2: Strip emojis and most pictographs/symbols from text destined to the
+// PPTX. The Roboto font in the template doesn't render emoji glyphs cleanly,
+// and CSMs reported the slides looked unprofessional with mixed emoji output.
+// We filter at the XML-write boundary only — the UI preview keeps any emojis
+// the user typed, so editing is unaffected.
+//
+// Ranges covered:
+//   - Emoticons (1F600–1F64F)
+//   - Misc Symbols & Pictographs (1F300–1F5FF)
+//   - Transport & Map (1F680–1F6FF)
+//   - Supplemental Symbols & Pictographs (1F900–1F9FF)
+//   - Symbols & Pictographs Extended-A (1FA70–1FAFF)
+//   - Misc Symbols (2600–26FF) — sun, snowflake, etc.
+//   - Dingbats (2700–27BF) — checkmarks, crosses
+//   - Variation Selectors (FE0F — emoji presentation modifier)
+//   - Zero-Width Joiner (200D)
+// We intentionally KEEP currency symbols, math operators, arrows used in
+// regular prose (←→↑↓ are in 2190–21FF, NOT in our strip list).
+function _stripEmojis(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/[\u{1F600}-\u{1F64F}]/gu, '')
+    .replace(/[\u{1F300}-\u{1F5FF}]/gu, '')
+    .replace(/[\u{1F680}-\u{1F6FF}]/gu, '')
+    .replace(/[\u{1F900}-\u{1F9FF}]/gu, '')
+    .replace(/[\u{1FA70}-\u{1FAFF}]/gu, '')
+    .replace(/[\u{2600}-\u{26FF}]/gu, '')
+    .replace(/[\u{2700}-\u{27BF}]/gu, '')
+    .replace(/[\u{23E0}-\u{23FF}]/gu, '')
+    .replace(/\uFE0F/g, '')
+    .replace(/\u200D/g, '')
+    // Collapse any double spaces left behind, then trim
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+// Sanitize a single value before it enters the slide XML: strip emojis, then
+// XML-escape. Used at every text insertion point in the generator.
+function _sanitizeForPptx(value) {
+  return _xmlEscape(_stripEmojis(value));
+}
+
 function _escapeRegExp(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -15516,7 +15558,7 @@ function _escapeRegExp(s) {
 // stores as 3 separate runs: '[' + 'Title' + ']'. We collapse to a single
 // run keeping the middle run's rPr (which has the actual styling).
 function _replaceFragmentedLabel(xml, label, value) {
-  const safe = _xmlEscape(value);
+  const safe = _sanitizeForPptx(value);
   const re = new RegExp(
     '<a:r>(' + COF_RPR_RE_SRC + ')<a:t>\\[</a:t></a:r>' +
     '<a:r>(' + COF_RPR_RE_SRC + ')<a:t>' + _escapeRegExp(label) + '</a:t></a:r>' +
@@ -15551,7 +15593,7 @@ function _replaceInColumn(xml, colIdx, objective) {
     const [s, e] = titleRange;
     const ph = `[Business Objectives ${colIdx + 1} Title]`;
     const re = new RegExp('<a:t>' + _escapeRegExp(ph) + '</a:t>', 'g');
-    const updated = xml.slice(s, e).replace(re, '<a:t>' + _xmlEscape(objective.title || '') + '</a:t>');
+    const updated = xml.slice(s, e).replace(re, '<a:t>' + _sanitizeForPptx(objective.title || '') + '</a:t>');
     xml = xml.slice(0, s) + updated + xml.slice(e);
   }
 
@@ -15561,7 +15603,7 @@ function _replaceInColumn(xml, colIdx, objective) {
     const [s, e] = descRange;
     const ph = `[Business Objectives ${colIdx + 1} Description]`;
     const re = new RegExp('<a:t>' + _escapeRegExp(ph) + '</a:t>', 'g');
-    const updated = xml.slice(s, e).replace(re, '<a:t>' + _xmlEscape(objective.description || '') + '</a:t>');
+    const updated = xml.slice(s, e).replace(re, '<a:t>' + _sanitizeForPptx(objective.description || '') + '</a:t>');
     xml = xml.slice(0, s) + updated + xml.slice(e);
   }
 
@@ -15575,7 +15617,7 @@ function _replaceInColumn(xml, colIdx, objective) {
       const value = metrics[i] || '';
       // Template has [Metrics 6 (missing closing bracket) — handle both
       const re = new RegExp('<a:t>\\[Metrics ' + (i + 1) + '\\]?</a:t>', 'g');
-      block = block.replace(re, '<a:t>' + _xmlEscape(value) + '</a:t>');
+      block = block.replace(re, '<a:t>' + _sanitizeForPptx(value) + '</a:t>');
     }
     xml = xml.slice(0, s) + block + xml.slice(e);
   }
@@ -15589,7 +15631,7 @@ function _replaceInColumn(xml, colIdx, objective) {
     for (let i = 0; i < 5; i++) {
       const value = results[i] || '';
       const re = new RegExp('<a:t>\\[Activities ' + (i + 1) + '\\]</a:t>', 'g');
-      block = block.replace(re, '<a:t>' + _xmlEscape(value) + '</a:t>');
+      block = block.replace(re, '<a:t>' + _sanitizeForPptx(value) + '</a:t>');
     }
     xml = xml.slice(0, s) + block + xml.slice(e);
   }
