@@ -50,6 +50,32 @@ function HomeButton({ onBack, color = '#632CA6' }) {
   );
 }
 
+// ============================================================================
+// v44: useIsMobile hook — detect narrow viewport for responsive UI tweaks
+// ============================================================================
+// Returns true when window.innerWidth < breakpoint. Listens to resize events
+// and cleans up. Default breakpoint 768px aligns with Tailwind's `md`.
+// Used throughout the app to conditionally adjust paddings, font sizes, and
+// grid templates for mobile screens.
+// ============================================================================
+function useIsMobile(breakpoint = 768) {
+  const [isMobile, setIsMobile] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.innerWidth < breakpoint;
+  });
+  
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleResize = () => {
+      setIsMobile(window.innerWidth < breakpoint);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [breakpoint]);
+  
+  return isMobile;
+}
+
 // =====================================================
 // LANDING PAGE COMPONENT
 // =====================================================
@@ -395,11 +421,11 @@ function DatadogPlatformLauncher({ onNavigate, language, setLanguage }) {
           </p>
         </div>
 
-        {/* Portfolio Stats Bar */}
+        {/* Portfolio Stats Bar — v43: auto-fit for mobile */}
         {stats && stats.hasData && (
           <div style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(4, 1fr)',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
             gap: '1rem',
             maxWidth: '1200px',
             width: '100%',
@@ -2107,8 +2133,8 @@ const MultiFileUploadZone = memo(({ uploadedFiles, onFilesSelect, onDrop, onDrag
           : (language === 'pt' ? 'ou clique para selecionar os arquivos' : 'or click to select files')}
       </p>
       
-      {/* File Status */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem', width: '100%', maxWidth: '800px' }}>
+      {/* File Status — v43: auto-fit for mobile */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '1rem', width: '100%', maxWidth: '800px' }}>
         {Object.entries(fileTypes).map(([key, label]) => (
           <div key={key} style={{
             background: uploadedFiles[key] ? '#d1fae5' : '#fff',
@@ -2404,6 +2430,86 @@ const PDF_DATA = {
     ootbIntegrations: 'multiple' // Various integrations visible
   }
 };
+
+// ============================================================================
+// v40: Action Plan System
+// ============================================================================
+// Plano de ação por cliente, salvo em localStorage.
+// Schema completo: status + owner + dueDate + targetMetric + checkpoints + history
+// ============================================================================
+
+// ============================================================================
+// v42: Customer metadata (industry, tier, region) — used for cohort filtering
+// ============================================================================
+// Stored separately from assessments so the metadata persists even if all
+// assessments are deleted. Each customer has at most one metadata record.
+// ============================================================================
+
+const CUSTOMER_META_STORAGE_PREFIX = 'datadog-customer-meta-';
+
+// Industry options. Aligned with common Datadog enterprise verticals.
+// Order matters in the dropdown UI.
+const INDUSTRY_OPTIONS = [
+  { key: 'financial',    pt: 'Financeiro',         en: 'Financial Services' },
+  { key: 'retail',       pt: 'Varejo',             en: 'Retail' },
+  { key: 'ecommerce',    pt: 'E-commerce',         en: 'E-commerce' },
+  { key: 'media',        pt: 'Mídia e Streaming',  en: 'Media & Streaming' },
+  { key: 'gaming',       pt: 'Games',              en: 'Gaming' },
+  { key: 'saas',         pt: 'SaaS / Tecnologia',  en: 'SaaS / Technology' },
+  { key: 'healthcare',   pt: 'Saúde',              en: 'Healthcare' },
+  { key: 'logistics',    pt: 'Logística',          en: 'Logistics' },
+  { key: 'manufacturing',pt: 'Indústria',          en: 'Manufacturing' },
+  { key: 'telecom',      pt: 'Telecom',            en: 'Telecom' },
+  { key: 'public',       pt: 'Setor Público',      en: 'Public Sector' },
+  { key: 'education',    pt: 'Educação',           en: 'Education' },
+  { key: 'other',        pt: 'Outros',             en: 'Other' }
+];
+
+// Tier options — based on contract size / strategic importance.
+const TIER_OPTIONS = [
+  { key: 'enterprise', pt: 'Enterprise',     en: 'Enterprise' },
+  { key: 'commercial', pt: 'Comercial',      en: 'Commercial' },
+  { key: 'mid-market', pt: 'Mid-Market',     en: 'Mid-Market' },
+  { key: 'smb',        pt: 'SMB',            en: 'SMB' }
+];
+
+function getCustomerMetaStorageKey(customerId) {
+  return `${CUSTOMER_META_STORAGE_PREFIX}${customerId}`;
+}
+
+function loadCustomerMeta(customerId) {
+  if (!customerId) return null;
+  try {
+    const raw = localStorage.getItem(getCustomerMetaStorageKey(customerId));
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    console.warn('[CustomerMeta] Failed to load:', e);
+    return null;
+  }
+}
+
+function saveCustomerMeta(customerId, meta) {
+  if (!customerId) return false;
+  try {
+    const next = { ...(meta || {}), updatedAt: new Date().toISOString() };
+    localStorage.setItem(getCustomerMetaStorageKey(customerId), JSON.stringify(next));
+    return true;
+  } catch (e) {
+    console.error('[CustomerMeta] Failed to save:', e);
+    return false;
+  }
+}
+
+// Helper to get the localized label for an industry/tier key
+function getIndustryLabel(key, lang) {
+  const opt = INDUSTRY_OPTIONS.find(o => o.key === key);
+  return opt ? (lang === 'pt' ? opt.pt : opt.en) : null;
+}
+
+function getTierLabel(key, lang) {
+  const opt = TIER_OPTIONS.find(o => o.key === key);
+  return opt ? (lang === 'pt' ? opt.pt : opt.en) : null;
+}
 
 // ============================================================================
 // v40: Action Plan System
@@ -8506,7 +8612,7 @@ function AssessmentResults({ assessment, serviceName, teamName, businessOwner, t
                 </div>
               )}
               <p style={{ margin: '0 0 0.75rem 0', color: '#4b5563', fontSize: '0.875rem' }}>{rec.rationale}</p>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem', fontSize: '0.875rem' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '1rem', fontSize: '0.875rem' }}>
                 <div>
                   <div style={{ color: '#6b7280', fontWeight: '500' }}>
                     {language === 'pt' ? 'Responsável' : 'Owner'}
@@ -10416,6 +10522,7 @@ function DatadogAdminConsole({ onBack, onNavigateToAssessment, initialLanguage }
   const [view, setView] = useState('dashboard'); // dashboard | customers | portfolio | benchmarks
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [selectedOrgUnit, setSelectedOrgUnit] = useState(null);
+  const isMobile = useIsMobile();
   const t = ADMIN_TRANSLATIONS[initialLanguage || 'en'];
   const language = initialLanguage || 'en';
   const [filter, setFilter] = useState({
@@ -10427,6 +10534,9 @@ function DatadogAdminConsole({ onBack, onNavigateToAssessment, initialLanguage }
 
   // Load all assessments from localStorage
   const [allAssessments, setAllAssessments] = useState([]);
+  
+  // v43: Recalculate-all modal state. null = closed.
+  const [recalcAllOpen, setRecalcAllOpen] = useState(false);
   
   useEffect(() => {
     loadAllAssessments();
@@ -10580,19 +10690,32 @@ function DatadogAdminConsole({ onBack, onNavigateToAssessment, initialLanguage }
       <div style={{
         background: '#632CA6',
         color: 'white',
-        padding: '1.5rem 2rem',
+        padding: isMobile ? '1rem' : '1.5rem 2rem',
         boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
       }}>
-        <div style={{ maxWidth: '1400px', margin: '0 auto', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ 
+          maxWidth: '1400px', 
+          margin: '0 auto', 
+          display: 'flex', 
+          justifyContent: 'space-between', 
+          alignItems: isMobile ? 'stretch' : 'center',
+          flexDirection: isMobile ? 'column' : 'row',
+          gap: isMobile ? '0.75rem' : 0
+        }}>
           <div>
-            <h1 style={{ margin: 0, fontSize: '1.5rem', fontWeight: '700' }}>
+            <h1 style={{ margin: 0, fontSize: isMobile ? '1.125rem' : '1.5rem', fontWeight: '700' }}>
               {t.headerTitle}
             </h1>
-            <p style={{ margin: '0.25rem 0 0 0', opacity: 0.9, fontSize: '0.875rem' }}>
+            <p style={{ margin: '0.25rem 0 0 0', opacity: 0.9, fontSize: isMobile ? '0.75rem' : '0.875rem' }}>
               {t.headerSubtitle}
             </p>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+          <div style={{ 
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: '0.5rem',
+            flexWrap: 'wrap'
+          }}>
             {onNavigateToAssessment && (
               <button
                 onClick={onNavigateToAssessment}
@@ -10627,6 +10750,46 @@ function DatadogAdminConsole({ onBack, onNavigateToAssessment, initialLanguage }
                 {t.goToAssessment}
               </button>
             )}
+            {/* v43: Recalculate All button — only enabled when there are assessments */}
+            <button
+              onClick={() => setRecalcAllOpen(true)}
+              disabled={allAssessments.length === 0}
+              style={{
+                background: allAssessments.length === 0 ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.15)',
+                color: allAssessments.length === 0 ? 'rgba(255,255,255,0.4)' : 'white',
+                border: '1px solid rgba(255,255,255,0.3)',
+                padding: '0.625rem 1.25rem',
+                borderRadius: '8px',
+                cursor: allAssessments.length === 0 ? 'not-allowed' : 'pointer',
+                fontWeight: '600',
+                fontSize: '0.875rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                backdropFilter: 'blur(10px)',
+                transition: 'all 0.2s'
+              }}
+              onMouseEnter={(e) => {
+                if (allAssessments.length > 0) {
+                  e.currentTarget.style.background = 'rgba(255,255,255,0.25)';
+                  e.currentTarget.style.transform = 'translateY(-1px)';
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (allAssessments.length > 0) {
+                  e.currentTarget.style.background = 'rgba(255,255,255,0.15)';
+                  e.currentTarget.style.transform = 'translateY(0)';
+                }
+              }}
+              title={language === 'pt' ? 'Recalcular todos os assessments' : 'Recalculate all assessments'}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                <path d="M23 4V10H17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M1 20V14H7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M3.51 9C4.01717 7.56678 4.87913 6.2854 6.01547 5.27542C7.1518 4.26543 8.52547 3.55976 10.0083 3.22426C11.4911 2.88875 13.0348 2.93434 14.4952 3.35677C15.9556 3.77921 17.2853 4.56471 18.36 5.64L23 10M1 14L5.64 18.36C6.71475 19.4353 8.04437 20.2208 9.50481 20.6432C10.9652 21.0657 12.5089 21.1112 13.9917 20.7757C15.4745 20.4402 16.8482 19.7346 17.9845 18.7246C19.1209 17.7146 19.9828 16.4332 20.49 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              {language === 'pt' ? 'Recalcular Todos' : 'Recalculate All'}
+            </button>
             <button
               onClick={() => exportPortfolioCSV(allAssessments, customerGroups, language)}
               disabled={allAssessments.length === 0}
@@ -10679,7 +10842,15 @@ function DatadogAdminConsole({ onBack, onNavigateToAssessment, initialLanguage }
         borderBottom: '1px solid #e5e7eb',
         boxShadow: '0 1px 3px rgba(0,0,0,0.05)'
       }}>
-        <div style={{ maxWidth: '1400px', margin: '0 auto', display: 'flex', gap: '0.5rem', padding: '0 2rem' }}>
+        <div style={{ 
+          maxWidth: '1400px', 
+          margin: '0 auto', 
+          display: 'flex', 
+          gap: '0.5rem', 
+          padding: isMobile ? '0 0.5rem' : '0 2rem',
+          overflowX: isMobile ? 'auto' : 'visible',
+          WebkitOverflowScrolling: 'touch'
+        }}>
           {[
             { id: 'dashboard', label: t.tabDashboard },
             { id: 'customers', label: t.tabCustomers },
@@ -10695,12 +10866,14 @@ function DatadogAdminConsole({ onBack, onNavigateToAssessment, initialLanguage }
                 background: view === tab.id ? '#632CA6' : 'transparent',
                 color: view === tab.id ? 'white' : '#4b5563',
                 border: 'none',
-                padding: '1rem 1.5rem',
-                fontSize: '0.9375rem',
+                padding: isMobile ? '0.75rem 1rem' : '1rem 1.5rem',
+                fontSize: isMobile ? '0.8125rem' : '0.9375rem',
                 fontWeight: '600',
                 cursor: 'pointer',
                 borderBottom: view === tab.id ? '3px solid #632CA6' : '3px solid transparent',
-                transition: 'all 0.2s'
+                transition: 'all 0.2s',
+                whiteSpace: 'nowrap',
+                flexShrink: 0
               }}
             >
               {tab.label}
@@ -10710,7 +10883,7 @@ function DatadogAdminConsole({ onBack, onNavigateToAssessment, initialLanguage }
       </div>
 
       {/* Main Content */}
-      <div style={{ maxWidth: '1400px', margin: '0 auto', padding: '2rem' }}>
+      <div style={{ maxWidth: '1400px', margin: '0 auto', padding: isMobile ? '1rem' : '2rem' }}>
         {view === 'dashboard' && <DashboardView kpis={portfolioKPIs} customers={customerGroups} t={t} onSelectCustomer={setSelectedCustomer} />}
         {view === 'customers' && <CustomersView customers={customerGroups} onSelectCustomer={setSelectedCustomer} t={t} language={language} onDataChanged={loadAllAssessments} />}
         {view === 'portfolio' && <PortfolioView customers={customerGroups} kpis={portfolioKPIs} t={t} onSelectCustomer={setSelectedCustomer} />}
@@ -10730,6 +10903,417 @@ function DatadogAdminConsole({ onBack, onNavigateToAssessment, initialLanguage }
           t={t}
         />
       )}
+      
+      {/* v43: Recalculate-all batch modal */}
+      {recalcAllOpen && (
+        <RecalculateAllModal
+          allAssessments={allAssessments}
+          language={language}
+          onClose={() => setRecalcAllOpen(false)}
+          onComplete={() => {
+            loadAllAssessments();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// v43: RecalculateAllModal — batch recalculation of all assessments
+// ============================================================================
+// Workflow:
+//   1. Confirmation step — show count + warning, user confirms
+//   2. Processing step — loop through assessments, show progress bar
+//   3. Summary step — show success/skip/fail counts, close button
+//
+// For each assessment:
+//   - If has inputData → recalculate with assessMaturity()
+//   - If no inputData → skip (count as skipped)
+//   - On error → count as failed, log error
+//
+// Updates localStorage via addAssessmentToStorage so other views refresh.
+// ============================================================================
+function RecalculateAllModal({ allAssessments, language, onClose, onComplete }) {
+  const isPt = language === 'pt';
+  
+  // Steps: confirm → processing → done
+  const [step, setStep] = useState('confirm');
+  const [progress, setProgress] = useState({ current: 0, total: 0 });
+  const [results, setResults] = useState({ success: 0, skipped: 0, failed: 0, errors: [] });
+  
+  // Count how many assessments are eligible (have inputData)
+  const eligibleCount = allAssessments.filter(a => a.inputData).length;
+  const skippableCount = allAssessments.length - eligibleCount;
+  
+  const runBatch = async () => {
+    setStep('processing');
+    setProgress({ current: 0, total: allAssessments.length });
+    
+    let success = 0;
+    let skipped = 0;
+    let failed = 0;
+    const errors = [];
+    
+    for (let i = 0; i < allAssessments.length; i++) {
+      const assessment = allAssessments[i];
+      setProgress({ current: i + 1, total: allAssessments.length });
+      
+      // Yield to the UI thread so the progress bar can render
+      await new Promise(resolve => setTimeout(resolve, 0));
+      
+      try {
+        if (!assessment.inputData) {
+          skipped++;
+          continue;
+        }
+        
+        const customerName = assessment.teamName || assessment.serviceName || assessment.customerId;
+        const recalculated = assessMaturity(assessment.inputData, language === 'pt' ? 'pt' : 'en', customerName);
+        
+        // Build the recalculated assessment, preserving identity fields
+        const recalculatedAssessment = {
+          ...assessment,
+          // Identity fields (keep as-is)
+          assessmentId: assessment.assessmentId || assessment.id,
+          id: assessment.id || assessment.assessmentId,
+          accountId: assessment.accountId,
+          teamName: assessment.teamName,
+          date: assessment.date,
+          inputData: assessment.inputData,
+          // Updated fields
+          finalLevel: recalculated.finalLevel,
+          rawScore: recalculated.rawScore,
+          qualifier: recalculated.qualifier,
+          gatings: recalculated.gatings,
+          dimensions: {
+            adoption: {
+              score: recalculated.dimensions.adoption.score,
+              level: recalculated.dimensions.adoption.level,
+              signals: recalculated.dimensions.adoption.signals || [],
+              issues: recalculated.dimensions.adoption.issues || [],
+              rationale: recalculated.dimensions.adoption.rationale || ''
+            },
+            governance: {
+              score: recalculated.dimensions.governance.score,
+              level: recalculated.dimensions.governance.level,
+              signals: recalculated.dimensions.governance.signals || [],
+              issues: recalculated.dimensions.governance.issues || [],
+              rationale: recalculated.dimensions.governance.rationale || ''
+            },
+            quality: {
+              score: recalculated.dimensions.quality.score,
+              level: recalculated.dimensions.quality.level,
+              signals: recalculated.dimensions.quality.signals || [],
+              issues: recalculated.dimensions.quality.issues || [],
+              rationale: recalculated.dimensions.quality.rationale || ''
+            },
+            alerting: {
+              score: recalculated.dimensions.alerting.score,
+              level: recalculated.dimensions.alerting.level,
+              signals: recalculated.dimensions.alerting.signals || [],
+              issues: recalculated.dimensions.alerting.issues || [],
+              rationale: recalculated.dimensions.alerting.rationale || ''
+            },
+            cost: {
+              score: recalculated.dimensions.cost.score,
+              level: recalculated.dimensions.cost.level,
+              signals: recalculated.dimensions.cost.signals || [],
+              issues: recalculated.dimensions.cost.issues || [],
+              rationale: recalculated.dimensions.cost.rationale || ''
+            }
+          },
+          insights: recalculated.insights,
+          recommendations: recalculated.recommendations,
+          classifiedRecommendations: recalculated.classifiedRecommendations,
+          rationale: recalculated.rationale,
+          executiveSummary: recalculated.executiveSummary,
+          roadmap: recalculated.roadmap,
+          trainings: recalculated.trainings,
+          recalculatedAt: new Date().toISOString(),
+          recalculatedFromVersion: assessment.recalculatedAt ? 'v-recalc' : 'v-original'
+        };
+        
+        const accountId = assessment.accountId || assessment.customerId;
+        addAssessmentToStorage(accountId, recalculatedAssessment);
+        success++;
+      } catch (e) {
+        console.error('[RecalcAll] Failed for', assessment.teamName, e);
+        failed++;
+        errors.push({
+          name: assessment.teamName || assessment.customerId,
+          error: e.message || String(e)
+        });
+      }
+    }
+    
+    setResults({ success, skipped, failed, errors });
+    setStep('done');
+  };
+  
+  const handleFinalize = () => {
+    if (onComplete) onComplete();
+    onClose();
+  };
+  
+  const progressPct = progress.total > 0 ? (progress.current / progress.total) * 100 : 0;
+  
+  return (
+    <div
+      onClick={step === 'processing' ? undefined : onClose}
+      style={{
+        position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+        background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        zIndex: 2300, padding: '2rem'
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: 'white', borderRadius: '12px', padding: '1.75rem',
+          maxWidth: '520px', width: '100%',
+          boxShadow: '0 20px 50px rgba(0,0,0,0.3)'
+        }}
+      >
+        {/* ---------- CONFIRM STEP ---------- */}
+        {step === 'confirm' && (
+          <>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.75rem', marginBottom: '1rem' }}>
+              <span style={{ fontSize: '1.75rem' }}>🔄</span>
+              <div>
+                <h2 style={{ margin: '0 0 0.25rem 0', color: '#1f2937', fontSize: '1.25rem' }}>
+                  {isPt ? 'Recalcular todos os assessments?' : 'Recalculate all assessments?'}
+                </h2>
+                <p style={{ margin: 0, color: '#6b7280', fontSize: '0.875rem', lineHeight: 1.5 }}>
+                  {isPt 
+                    ? 'Esta operação roda a versão mais recente do scoring engine em todos os assessments salvos. Útil quando há atualizações de cálculo (escalation, novos critérios, ajustes de pesos).'
+                    : 'This operation runs the latest scoring engine version against all saved assessments. Useful when there are calculation updates (escalation, new criteria, weight adjustments).'}
+                </p>
+              </div>
+            </div>
+            
+            {/* Stats overview */}
+            <div style={{
+              background: '#f9fafb',
+              border: '1px solid #e5e7eb',
+              borderRadius: '8px',
+              padding: '1rem',
+              marginBottom: '1rem'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                <span style={{ fontSize: '0.8125rem', color: '#374151', fontWeight: '600' }}>
+                  {isPt ? 'Total de assessments' : 'Total assessments'}:
+                </span>
+                <span style={{ fontSize: '0.8125rem', color: '#1f2937', fontWeight: '700' }}>
+                  {allAssessments.length}
+                </span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                <span style={{ fontSize: '0.8125rem', color: '#059669' }}>
+                  ✓ {isPt ? 'Recalculáveis (com inputData)' : 'Recalculatable (with inputData)'}:
+                </span>
+                <span style={{ fontSize: '0.8125rem', color: '#059669', fontWeight: '600' }}>
+                  {eligibleCount}
+                </span>
+              </div>
+              {skippableCount > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: '0.8125rem', color: '#92400e' }}>
+                    ⊘ {isPt ? 'Serão pulados (sem inputData)' : 'Will be skipped (no inputData)'}:
+                  </span>
+                  <span style={{ fontSize: '0.8125rem', color: '#92400e', fontWeight: '600' }}>
+                    {skippableCount}
+                  </span>
+                </div>
+              )}
+            </div>
+            
+            {/* Warning */}
+            <div style={{
+              background: '#fef3c7',
+              border: '1px solid #fde68a',
+              borderRadius: '6px',
+              padding: '0.75rem 0.875rem',
+              marginBottom: '1.25rem',
+              fontSize: '0.8125rem',
+              color: '#92400e',
+              lineHeight: 1.5
+            }}>
+              ⚠️ {isPt 
+                ? 'Os scores podem mudar. Edições manuais (renomear, notas, plano de ação) são preservadas. Esta ação não pode ser desfeita em lote — você precisaria re-uploadar os PDFs originais.'
+                : 'Scores may change. Manual edits (rename, notes, action plan) are preserved. This action cannot be undone in bulk — you would need to re-upload the original PDFs.'}
+            </div>
+            
+            {/* Buttons */}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
+              <button
+                onClick={onClose}
+                style={{
+                  background: 'white', color: '#374151', border: '1px solid #d1d5db',
+                  padding: '0.5rem 1rem', borderRadius: '6px',
+                  fontSize: '0.875rem', fontWeight: '600', cursor: 'pointer'
+                }}
+              >
+                {isPt ? 'Cancelar' : 'Cancel'}
+              </button>
+              <button
+                onClick={runBatch}
+                disabled={eligibleCount === 0}
+                style={{
+                  background: eligibleCount === 0 ? '#d1d5db' : '#632CA6',
+                  color: 'white', border: 'none',
+                  padding: '0.5rem 1rem', borderRadius: '6px',
+                  fontSize: '0.875rem', fontWeight: '600', 
+                  cursor: eligibleCount === 0 ? 'not-allowed' : 'pointer'
+                }}
+              >
+                {isPt ? `Recalcular ${eligibleCount}` : `Recalculate ${eligibleCount}`}
+              </button>
+            </div>
+          </>
+        )}
+        
+        {/* ---------- PROCESSING STEP ---------- */}
+        {step === 'processing' && (
+          <>
+            <h2 style={{ margin: '0 0 0.5rem 0', color: '#1f2937', fontSize: '1.25rem' }}>
+              {isPt ? 'Recalculando...' : 'Recalculating...'}
+            </h2>
+            <p style={{ margin: '0 0 1.25rem 0', color: '#6b7280', fontSize: '0.875rem' }}>
+              {isPt 
+                ? 'Por favor aguarde. Não feche esta janela.'
+                : 'Please wait. Do not close this window.'}
+            </p>
+            
+            {/* Progress bar */}
+            <div style={{
+              background: '#f3f4f6',
+              borderRadius: '8px',
+              height: '12px',
+              overflow: 'hidden',
+              marginBottom: '0.75rem'
+            }}>
+              <div style={{
+                background: 'linear-gradient(to right, #632CA6, #9560ca)',
+                height: '100%',
+                width: `${progressPct}%`,
+                transition: 'width 0.2s'
+              }} />
+            </div>
+            
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.875rem' }}>
+              <span style={{ color: '#6b7280' }}>
+                {progress.current} {isPt ? 'de' : 'of'} {progress.total}
+              </span>
+              <span style={{ color: '#632CA6', fontWeight: '600' }}>
+                {progressPct.toFixed(0)}%
+              </span>
+            </div>
+          </>
+        )}
+        
+        {/* ---------- DONE STEP ---------- */}
+        {step === 'done' && (
+          <>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.75rem', marginBottom: '1rem' }}>
+              <span style={{ fontSize: '1.75rem' }}>
+                {results.failed === 0 ? '✅' : '⚠️'}
+              </span>
+              <div>
+                <h2 style={{ margin: '0 0 0.25rem 0', color: '#1f2937', fontSize: '1.25rem' }}>
+                  {isPt ? 'Recálculo concluído' : 'Recalculation complete'}
+                </h2>
+                <p style={{ margin: 0, color: '#6b7280', fontSize: '0.875rem' }}>
+                  {isPt 
+                    ? 'Resumo da operação:'
+                    : 'Operation summary:'}
+                </p>
+              </div>
+            </div>
+            
+            {/* Results breakdown */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '1.25rem' }}>
+              <div style={{ 
+                display: 'flex', 
+                justifyContent: 'space-between', 
+                alignItems: 'center',
+                padding: '0.625rem 0.875rem',
+                background: '#ecfdf5',
+                border: '1px solid #a7f3d0',
+                borderRadius: '6px'
+              }}>
+                <span style={{ fontSize: '0.875rem', color: '#065f46' }}>
+                  ✓ {isPt ? 'Recalculados com sucesso' : 'Successfully recalculated'}
+                </span>
+                <span style={{ fontSize: '1rem', fontWeight: '700', color: '#065f46' }}>
+                  {results.success}
+                </span>
+              </div>
+              {results.skipped > 0 && (
+                <div style={{ 
+                  display: 'flex', 
+                  justifyContent: 'space-between', 
+                  alignItems: 'center',
+                  padding: '0.625rem 0.875rem',
+                  background: '#fef3c7',
+                  border: '1px solid #fde68a',
+                  borderRadius: '6px'
+                }}>
+                  <span style={{ fontSize: '0.875rem', color: '#92400e' }}>
+                    ⊘ {isPt ? 'Pulados (sem inputData)' : 'Skipped (no inputData)'}
+                  </span>
+                  <span style={{ fontSize: '1rem', fontWeight: '700', color: '#92400e' }}>
+                    {results.skipped}
+                  </span>
+                </div>
+              )}
+              {results.failed > 0 && (
+                <div style={{ 
+                  padding: '0.625rem 0.875rem',
+                  background: '#fef2f2',
+                  border: '1px solid #fecaca',
+                  borderRadius: '6px'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                    <span style={{ fontSize: '0.875rem', color: '#991b1b' }}>
+                      ✗ {isPt ? 'Falhas' : 'Failed'}
+                    </span>
+                    <span style={{ fontSize: '1rem', fontWeight: '700', color: '#991b1b' }}>
+                      {results.failed}
+                    </span>
+                  </div>
+                  {results.errors.slice(0, 3).map((err, i) => (
+                    <div key={i} style={{ fontSize: '0.75rem', color: '#7f1d1d', marginTop: '0.25rem', fontFamily: 'monospace' }}>
+                      • {err.name}: {err.error}
+                    </div>
+                  ))}
+                  {results.errors.length > 3 && (
+                    <div style={{ fontSize: '0.75rem', color: '#7f1d1d', marginTop: '0.25rem', fontStyle: 'italic' }}>
+                      {isPt 
+                        ? `+ ${results.errors.length - 3} outros erros (veja console)`
+                        : `+ ${results.errors.length - 3} more errors (see console)`}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+            
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <button
+                onClick={handleFinalize}
+                style={{
+                  background: '#632CA6', color: 'white', border: 'none',
+                  padding: '0.5rem 1.25rem', borderRadius: '6px',
+                  fontSize: '0.875rem', fontWeight: '600', cursor: 'pointer'
+                }}
+              >
+                {isPt ? 'Concluir' : 'Done'}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -10752,8 +11336,8 @@ function DashboardView({ kpis, customers, t, onSelectCustomer }) {
         {t.dashboardTitle}
       </h2>
 
-      {/* KPI Cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1.5rem', marginBottom: '2rem' }}>
+      {/* KPI Cards — v43: auto-fit for mobile responsiveness */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1.5rem', marginBottom: '2rem' }}>
         <KPICard 
           title={t.totalCustomers}
           value={kpis.totalCustomers} 
@@ -11327,8 +11911,8 @@ function PortfolioView({ customers, kpis, t, onSelectCustomer }) {
         {t.myPortfolio}
       </h2>
 
-      {/* Portfolio KPIs */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '1rem', marginBottom: '2rem' }}>
+      {/* Portfolio KPIs — v43: auto-fit for mobile */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '1rem', marginBottom: '2rem' }}>
         <KPICard title={t.customersCount} value={kpis.totalCustomers} color="#632CA6" />
         <KPICard title={t.avgScore} value={kpis.avgScore.toFixed(2)} color="#632CA6" />
         <KPICard title={t.improving} value={kpis.improving} color="#059669" />
@@ -11571,6 +12155,7 @@ function BenchmarksViewWithToggle({ assessments, customers, t }) {
 // ============================================================================
 function BenchmarksViewV2({ assessments, customers, t }) {
   const isPt = t.locale === 'pt-BR';
+  const isMobile = useIsMobile();
   
   // ==========================================================================
   // Customer selection — V2 needs a "current" customer to anchor the executive
@@ -11589,6 +12174,60 @@ function BenchmarksViewV2({ assessments, customers, t }) {
       || customersWithAssessments[0] 
       || null;
   }, [selectedCustomerId, customersWithAssessments]);
+  
+  // ==========================================================================
+  // v42: Cohort filter — narrows the benchmark sample to a subset of
+  // assessments matching the selected industry/tier. "all" = no filter.
+  // ==========================================================================
+  const [cohortIndustry, setCohortIndustry] = useState('all');
+  const [cohortTier, setCohortTier] = useState('all');
+  
+  // v42: Export modal state — modal-based to bypass iframe blob restrictions.
+  const [exportModalContent, setExportModalContent] = useState(null);
+  
+  // Build a lookup of customerId → meta to filter assessments by cohort.
+  // Done as useMemo so it doesn't reload from localStorage every render.
+  const customerMetas = useMemo(() => {
+    const map = {};
+    (customers || []).forEach(c => {
+      const meta = loadCustomerMeta(c.customerId);
+      if (meta) map[c.customerId] = meta;
+    });
+    return map;
+  }, [customers]);
+  
+  // Helper: which customerId does an assessment belong to?
+  // Assessments carry an _accountId set by the loader; fall back to lookup.
+  const assessmentCustomerId = (a) => {
+    if (a._accountId) {
+      const found = (customers || []).find(c => c.accountIds.includes(a._accountId));
+      return found?.customerId || a._accountId;
+    }
+    return null;
+  };
+  
+  // The filtered sample used for benchmark stats.
+  const filteredAssessments = useMemo(() => {
+    if (cohortIndustry === 'all' && cohortTier === 'all') return assessments;
+    return (assessments || []).filter(a => {
+      const cid = assessmentCustomerId(a);
+      const meta = cid ? customerMetas[cid] : null;
+      if (cohortIndustry !== 'all' && meta?.industry !== cohortIndustry) return false;
+      if (cohortTier !== 'all' && meta?.tier !== cohortTier) return false;
+      return true;
+    });
+  }, [assessments, cohortIndustry, cohortTier, customerMetas]);
+  
+  // Build cohort label for display in footer
+  const cohortLabel = useMemo(() => {
+    if (cohortIndustry === 'all' && cohortTier === 'all') {
+      return isPt ? 'Amostra geral' : 'General sample';
+    }
+    const parts = [];
+    if (cohortIndustry !== 'all') parts.push(getIndustryLabel(cohortIndustry, isPt ? 'pt' : 'en'));
+    if (cohortTier !== 'all') parts.push(getTierLabel(cohortTier, isPt ? 'pt' : 'en'));
+    return parts.join(' · ');
+  }, [cohortIndustry, cohortTier, isPt]);
   
   // ==========================================================================
   // Empty state
@@ -11617,17 +12256,18 @@ function BenchmarksViewV2({ assessments, customers, t }) {
   }
   
   // ==========================================================================
-  // Stats from sample
+  // Stats from cohort-filtered sample (v42: was just `assessments`)
   // ==========================================================================
-  const sampleScores = assessments.map(a => a.rawScore).sort((a, b) => a - b);
+  const sampleScores = filteredAssessments.map(a => a.rawScore).sort((a, b) => a - b);
   const sampleSize = sampleScores.length;
   const isSmallSample = sampleSize < 10;
   
-  const avg = sampleScores.reduce((a, b) => a + b, 0) / sampleSize;
-  const median = sampleScores[Math.floor(sampleSize / 2)];
-  const lowerBound = sampleScores[Math.floor(sampleSize * 0.25)];
-  const upperBound = sampleScores[Math.floor(sampleSize * 0.75)];
-  const top = sampleScores[sampleSize - 1];
+  // v42: Cohort may produce empty sample — guard against NaN/Infinity in stats.
+  const avg = sampleSize > 0 ? sampleScores.reduce((a, b) => a + b, 0) / sampleSize : 0;
+  const median = sampleSize > 0 ? sampleScores[Math.floor(sampleSize / 2)] : 0;
+  const lowerBound = sampleSize > 0 ? sampleScores[Math.floor(sampleSize * 0.25)] : 0;
+  const upperBound = sampleSize > 0 ? sampleScores[Math.floor(sampleSize * 0.75)] : 0;
+  const top = sampleSize > 0 ? sampleScores[sampleSize - 1] : 0;
   
   // ==========================================================================
   // Current customer's data
@@ -11829,54 +12469,327 @@ function BenchmarksViewV2({ assessments, customers, t }) {
   }));
   
   // ==========================================================================
+  // v42: Build the markdown export — captures the full executive narrative
+  // for QBR / governance review. Same structure as the visual layout.
+  // ==========================================================================
+  const buildBenchmarkExport = () => {
+    const customerName = currentCustomer.latestAssessment?.teamName || currentCustomer.customerId;
+    const lines = [];
+    
+    // Header
+    lines.push(`# ${isPt ? 'Benchmark de Maturidade' : 'Maturity Benchmark'} — ${customerName}`);
+    lines.push('');
+    lines.push(`*${isPt ? 'Gerado em' : 'Generated on'} ${new Date().toLocaleString(t.locale)}*`);
+    lines.push('');
+    lines.push(`**${isPt ? 'Coorte' : 'Cohort'}:** ${cohortLabel}`);
+    lines.push(`**${isPt ? 'Tamanho da amostra' : 'Sample size'}:** ${sampleSize} ${isPt ? (sampleSize === 1 ? 'avaliação' : 'avaliações') : (sampleSize === 1 ? 'assessment' : 'assessments')}${isSmallSample ? ` _(${isPt ? 'leitura direcional' : 'directional reading'})_` : ''}`);
+    lines.push('');
+    
+    // 1. Hero
+    lines.push(`## ${isPt ? 'Resumo Executivo' : 'Executive Summary'}`);
+    lines.push('');
+    lines.push(`| ${isPt ? 'Métrica' : 'Metric'} | ${isPt ? 'Valor' : 'Value'} |`);
+    lines.push('|---|---|');
+    lines.push(`| ${isPt ? 'Score Atual' : 'Current Score'} | **${currentScore.toFixed(2)}** ${isPt ? 'de 5,00' : 'of 5.00'} |`);
+    lines.push(`| ${isPt ? 'Nível Atual' : 'Current Level'} | **${isPt ? 'Nível' : 'Level'} ${currentLevel}** — ${levelFullName(currentLevel)} |`);
+    lines.push(`| ${isPt ? 'Posição no Benchmark' : 'Benchmark Position'} | **P${percentile}** (${isPt ? 'de' : 'of'} ${sampleSize} ${isPt ? 'avaliações' : 'assessments'}) |`);
+    if (scoreDelta !== null) {
+      const sign = scoreDelta > 0 ? '+' : '';
+      lines.push(`| ${isPt ? 'Evolução' : 'Evolution'} | **${sign}${scoreDelta.toFixed(2)}** ${isPt ? 'desde a avaliação anterior' : 'since previous assessment'} |`);
+    } else {
+      lines.push(`| ${isPt ? 'Evolução' : 'Evolution'} | _${isPt ? 'Primeira avaliação' : 'First assessment'}_ |`);
+    }
+    lines.push('');
+    lines.push(`> ${interpretation.state}`);
+    lines.push('');
+    
+    // 2. Interpretation
+    lines.push(`## ${isPt ? 'O que este resultado significa' : 'What this result means'}`);
+    lines.push('');
+    lines.push(`### ${isPt ? 'O que já está funcionando' : 'What is working'}`);
+    interpretation.working.forEach(w => lines.push(`- ${w}`));
+    lines.push('');
+    lines.push(`### ${isPt ? 'Lacunas para o próximo nível' : 'Gaps to next level'}`);
+    interpretation.gaps.forEach(g => lines.push(`- ${g}`));
+    lines.push('');
+    lines.push(`*${interpretation.next}*`);
+    lines.push('');
+    
+    // 3. Benchmark stats
+    lines.push(`## ${isPt ? 'Comparação com Benchmark' : 'Benchmark Comparison'}`);
+    lines.push('');
+    lines.push(`| ${isPt ? 'Métrica' : 'Metric'} | ${isPt ? 'Valor' : 'Value'} |`);
+    lines.push('|---|---|');
+    lines.push(`| ${isPt ? 'Média' : 'Average'} | ${avg.toFixed(2)} |`);
+    lines.push(`| ${isPt ? 'Mediana' : 'Median'} | ${median.toFixed(2)} |`);
+    lines.push(`| ${isPt ? 'Faixa inferior' : 'Lower range'} | ${lowerBound.toFixed(2)} |`);
+    lines.push(`| ${isPt ? 'Faixa superior' : 'Upper range'} | ${upperBound.toFixed(2)} |`);
+    lines.push(`| ${isPt ? 'Topo da amostra' : 'Top of sample'} | **${top.toFixed(2)}** |`);
+    lines.push('');
+    
+    // 4. Dimensions
+    lines.push(`## ${isPt ? 'Maturidade por Dimensão' : 'Maturity by Dimension'}`);
+    lines.push('');
+    lines.push(`| ${isPt ? 'Dimensão' : 'Dimension'} | Score | ${isPt ? 'Status' : 'Status'} |`);
+    lines.push('|---|---|---|');
+    dimensionData.forEach(d => {
+      const status = d.score >= 3.5 ? (isPt ? '🟢 Forte' : '🟢 Strong')
+        : d.score >= 2.0 ? (isPt ? '🟡 Em construção' : '🟡 Developing')
+        : (isPt ? '🔴 Crítico' : '🔴 Critical');
+      lines.push(`| ${d.label} | ${d.score.toFixed(2)} | ${status} |`);
+    });
+    lines.push('');
+    lines.push(`*${isPt ? 'A maior oportunidade de evolução está em' : 'The biggest evolution opportunity is in'}: ${weakestDims.map(d => d.label).join(', ')}.*`);
+    lines.push('');
+    
+    // 5. Gaps
+    lines.push(`## ${isPt ? 'Principais Gaps para Evolução' : 'Main Gaps for Evolution'}`);
+    lines.push('');
+    lines.push(`| ${isPt ? 'Gap' : 'Gap'} | ${isPt ? 'Impacto' : 'Impact'} | ${isPt ? 'Prioridade' : 'Priority'} |`);
+    lines.push('|---|---|---|');
+    prioritizedGaps.forEach(g => {
+      lines.push(`| ${g.gap} | ${g.impact} | **${g.priority}** |`);
+    });
+    lines.push('');
+    
+    // 6. Recommendations
+    if (recsToShow.length > 0) {
+      lines.push(`## ${isPt ? 'Recomendações Prioritárias' : 'Priority Recommendations'}`);
+      lines.push('');
+      lines.push(`| ${isPt ? 'Recomendação' : 'Recommendation'} | ${isPt ? 'Por que importa' : 'Why it matters'} | Owner | ${isPt ? 'Prazo' : 'Timeframe'} |`);
+      lines.push('|---|---|---|---|');
+      recsToShow.forEach(r => {
+        lines.push(`| ${r.title} | ${r.why} | ${r.owner} | ${r.timeframe} |`);
+      });
+      lines.push('');
+      lines.push(`*${isPt ? 'O próximo salto de maturidade não depende apenas de instrumentação. Depende de foco, padrão e governança.' : 'The next maturity leap does not depend only on instrumentation. It depends on focus, standard, and governance.'}*`);
+      lines.push('');
+    }
+    
+    // 7. Trend
+    if (sortedAssess.length >= 2) {
+      lines.push(`## ${isPt ? 'Tendência ao longo do tempo' : 'Trend over time'}`);
+      lines.push('');
+      lines.push(`| ${isPt ? 'Data' : 'Date'} | Score | ${isPt ? 'Nível' : 'Level'} |`);
+      lines.push('|---|---|---|');
+      [...sortedAssess].reverse().forEach(a => {
+        lines.push(`| ${new Date(a.date).toLocaleDateString(t.locale)} | ${a.rawScore.toFixed(2)} | ${a.finalLevel} |`);
+      });
+      lines.push(`| **${isPt ? 'Próxima meta' : 'Next target'}** | **${Math.min(5, currentScore + 0.5).toFixed(2)}** | — |`);
+      lines.push('');
+    }
+    
+    // Footer
+    lines.push('---');
+    lines.push('');
+    lines.push(`*${isPt 
+      ? 'Esta avaliação considera critérios de maturidade relacionados a monitoramento, observabilidade ponta a ponta, governança, padronização e conexão com impacto operacional. Os resultados devem ser interpretados em conjunto com contexto organizacional, arquitetura e criticidade dos serviços avaliados.'
+      : 'This assessment considers maturity criteria related to monitoring, end-to-end observability, governance, standardization, and connection to operational impact. Results should be interpreted together with organizational context, architecture, and criticality of evaluated services.'}*`);
+    
+    return lines.join('\n');
+  };
+  
+  // ==========================================================================
   // Render
   // ==========================================================================
   return (
     <div>
       {/* ==================== 1. HEADER ==================== */}
-      <div style={{ marginBottom: '1.5rem' }}>
-        <h2 style={{ fontSize: '1.75rem', fontWeight: '700', color: '#1f2937', margin: '0 0 0.5rem 0' }}>
-          {isPt ? 'Benchmark de Maturidade e Análise Comparativa' : 'Maturity Benchmark and Comparative Analysis'}
-        </h2>
-        <p style={{ fontSize: '0.9375rem', color: '#6b7280', margin: 0, lineHeight: 1.5, maxWidth: '900px' }}>
-          {isPt 
-            ? 'Posicionamento atual da organização, comparação com benchmark e próximos passos para evoluir maturidade operacional.'
-            : 'Current organizational positioning, benchmark comparison, and next steps to advance operational maturity.'}
-        </p>
+      <div style={{ 
+        marginBottom: isMobile ? '1rem' : '1.5rem', 
+        display: 'flex', 
+        flexDirection: isMobile ? 'column' : 'row',
+        justifyContent: 'space-between', 
+        alignItems: isMobile ? 'stretch' : 'flex-start', 
+        gap: '1rem', 
+        flexWrap: 'wrap' 
+      }}>
+        <div style={{ flex: 1, minWidth: '300px' }}>
+          <h2 style={{ fontSize: isMobile ? '1.375rem' : '1.75rem', fontWeight: '700', color: '#1f2937', margin: '0 0 0.5rem 0', lineHeight: 1.25 }}>
+            {isPt ? 'Benchmark de Maturidade e Análise Comparativa' : 'Maturity Benchmark and Comparative Analysis'}
+          </h2>
+          <p style={{ fontSize: isMobile ? '0.875rem' : '0.9375rem', color: '#6b7280', margin: 0, lineHeight: 1.5, maxWidth: '900px' }}>
+            {isPt 
+              ? 'Posicionamento atual da organização, comparação com benchmark e próximos passos para evoluir maturidade operacional.'
+              : 'Current organizational positioning, benchmark comparison, and next steps to advance operational maturity.'}
+          </p>
+        </div>
+        {/* v42: Export button */}
+        <button
+          onClick={() => {
+            const md = buildBenchmarkExport();
+            const safeName = (currentCustomer.latestAssessment?.teamName || currentCustomer.customerId)
+              .replace(/[^a-z0-9]/gi, '_').toLowerCase();
+            const filename = `benchmark-${safeName}-${new Date().toISOString().slice(0, 10)}.md`;
+            setExportModalContent({ markdown: md, filename });
+          }}
+          style={{
+            background: '#632CA6',
+            color: 'white',
+            border: 'none',
+            padding: isMobile ? '0.75rem 1rem' : '0.625rem 1rem',
+            borderRadius: '8px',
+            fontSize: '0.875rem',
+            fontWeight: '600',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '0.5rem',
+            whiteSpace: 'nowrap',
+            flexShrink: 0,
+            width: isMobile ? '100%' : 'auto'
+          }}
+          title={isPt ? 'Exportar para QBR' : 'Export for QBR'}
+        >
+          📤 {isPt ? 'Exportar para QBR' : 'Export for QBR'}
+        </button>
       </div>
       
-      {/* Customer selector — only if there are multiple customers */}
-      {customersWithAssessments.length > 1 && (
-        <div style={{ marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          <label style={{ fontSize: '0.8125rem', color: '#6b7280', fontWeight: '600' }}>
-            {isPt ? 'Organização:' : 'Organization:'}
+      {/* Customer selector + cohort filter — combined row */}
+      <div style={{ 
+        marginBottom: '1.5rem', 
+        display: 'flex', 
+        alignItems: isMobile ? 'stretch' : 'center', 
+        gap: isMobile ? '0.625rem' : '1rem',
+        flexWrap: 'wrap',
+        flexDirection: isMobile ? 'column' : 'row',
+        padding: isMobile ? '0.625rem 0.75rem' : '0.75rem 1rem',
+        background: '#f9fafb',
+        border: '1px solid #e5e7eb',
+        borderRadius: '8px'
+      }}>
+        {customersWithAssessments.length > 1 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <label style={{ fontSize: '0.75rem', color: '#6b7280', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              {isPt ? 'Organização' : 'Organization'}
+            </label>
+            <select
+              value={selectedCustomerId || ''}
+              onChange={(e) => setSelectedCustomerId(e.target.value)}
+              style={{
+                padding: '0.35rem 0.5rem',
+                border: '1px solid #d1d5db',
+                borderRadius: '6px',
+                fontSize: '0.8125rem',
+                background: 'white',
+                minWidth: '200px',
+                flex: isMobile ? 1 : 'none'
+              }}
+            >
+              {customersWithAssessments.map(c => (
+                <option key={c.customerId} value={c.customerId}>
+                  {c.latestAssessment?.teamName || c.customerId}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+        
+        {/* v42: Cohort filter */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <label style={{ fontSize: '0.75rem', color: '#6b7280', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            {isPt ? 'Coorte' : 'Cohort'}
           </label>
           <select
-            value={selectedCustomerId || ''}
-            onChange={(e) => setSelectedCustomerId(e.target.value)}
+            value={cohortIndustry}
+            onChange={(e) => setCohortIndustry(e.target.value)}
             style={{
-              padding: '0.4rem 0.75rem',
+              padding: '0.35rem 0.5rem',
               border: '1px solid #d1d5db',
               borderRadius: '6px',
-              fontSize: '0.875rem',
+              fontSize: '0.8125rem',
               background: 'white',
-              minWidth: '240px'
+              flex: isMobile ? 1 : 'none',
+              minWidth: isMobile ? '0' : 'auto'
             }}
+            title={isPt ? 'Filtrar por indústria' : 'Filter by industry'}
           >
-            {customersWithAssessments.map(c => (
-              <option key={c.customerId} value={c.customerId}>
-                {c.latestAssessment?.teamName || c.customerId}
+            <option value="all">
+              {isPt ? 'Todas as indústrias' : 'All industries'}
+            </option>
+            {INDUSTRY_OPTIONS.map(opt => (
+              <option key={opt.key} value={opt.key}>
+                {isPt ? opt.pt : opt.en}
               </option>
             ))}
           </select>
+          <select
+            value={cohortTier}
+            onChange={(e) => setCohortTier(e.target.value)}
+            style={{
+              padding: '0.35rem 0.5rem',
+              border: '1px solid #d1d5db',
+              borderRadius: '6px',
+              fontSize: '0.8125rem',
+              background: 'white',
+              flex: isMobile ? 1 : 'none',
+              minWidth: isMobile ? '0' : 'auto'
+            }}
+            title={isPt ? 'Filtrar por tier' : 'Filter by tier'}
+          >
+            <option value="all">
+              {isPt ? 'Todos os tiers' : 'All tiers'}
+            </option>
+            {TIER_OPTIONS.map(opt => (
+              <option key={opt.key} value={opt.key}>
+                {isPt ? opt.pt : opt.en}
+              </option>
+            ))}
+          </select>
+          {(cohortIndustry !== 'all' || cohortTier !== 'all') && (
+            <button
+              onClick={() => { setCohortIndustry('all'); setCohortTier('all'); }}
+              style={{
+                padding: '0.35rem 0.625rem',
+                border: '1px solid #d1d5db',
+                borderRadius: '6px',
+                fontSize: '0.75rem',
+                background: 'white',
+                color: '#6b7280',
+                cursor: 'pointer',
+                fontWeight: '500'
+              }}
+              title={isPt ? 'Limpar filtros' : 'Clear filters'}
+            >
+              ✕ {isPt ? 'Limpar' : 'Clear'}
+            </button>
+          )}
+        </div>
+        
+        <div style={{ marginLeft: isMobile ? 0 : 'auto', fontSize: '0.75rem', color: '#6b7280' }}>
+          {sampleSize > 0 ? (
+            <>{sampleSize} {isPt ? (sampleSize === 1 ? 'avaliação na amostra' : 'avaliações na amostra') : (sampleSize === 1 ? 'assessment in sample' : 'assessments in sample')}</>
+          ) : (
+            <span style={{ color: '#dc2626', fontWeight: '600' }}>
+              ⚠️ {isPt ? 'Coorte vazia — ajuste os filtros' : 'Empty cohort — adjust filters'}
+            </span>
+          )}
+        </div>
+      </div>
+      
+      {/* v42: Cohort empty warning */}
+      {sampleSize === 0 && (
+        <div style={{
+          background: '#fef2f2',
+          border: '1px solid #fecaca',
+          borderRadius: '8px',
+          padding: '1rem 1.25rem',
+          marginBottom: '1.5rem',
+          fontSize: '0.875rem',
+          color: '#991b1b'
+        }}>
+          {isPt 
+            ? 'A coorte selecionada não tem clientes com avaliações ainda. Use a aba "Visão Geral" no Customer Detail para classificar mais clientes por indústria e tier.'
+            : 'The selected cohort has no customers with assessments yet. Use the "Overview" tab in Customer Detail to classify more customers by industry and tier.'}
         </div>
       )}
       
       {/* ==================== 2. HERO (4 CARDS) ==================== */}
       <div style={{
         display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-        gap: '1rem',
+        gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(auto-fit, minmax(180px, 1fr))',
+        gap: isMobile ? '0.625rem' : '1rem',
         marginBottom: '1rem'
       }}>
         {/* Score Atual */}
@@ -11884,12 +12797,12 @@ function BenchmarksViewV2({ assessments, customers, t }) {
           background: 'white',
           border: '1px solid #e5e7eb',
           borderRadius: '12px',
-          padding: '1.25rem'
+          padding: isMobile ? '0.875rem' : '1.25rem'
         }}>
           <div style={{ fontSize: '0.6875rem', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: '600', marginBottom: '0.5rem' }}>
             {isPt ? 'Score Atual' : 'Current Score'}
           </div>
-          <div style={{ fontSize: '2rem', fontWeight: '700', color: '#632CA6', lineHeight: 1.1 }}>
+          <div style={{ fontSize: isMobile ? '1.5rem' : '2rem', fontWeight: '700', color: '#632CA6', lineHeight: 1.1 }}>
             {currentScore.toFixed(2)}
           </div>
           <div style={{ fontSize: '0.75rem', color: '#9ca3af', marginTop: '0.25rem' }}>
@@ -11902,15 +12815,15 @@ function BenchmarksViewV2({ assessments, customers, t }) {
           background: 'white',
           border: '1px solid #e5e7eb',
           borderRadius: '12px',
-          padding: '1.25rem'
+          padding: isMobile ? '0.875rem' : '1.25rem'
         }}>
           <div style={{ fontSize: '0.6875rem', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: '600', marginBottom: '0.5rem' }}>
             {isPt ? 'Nível Atual' : 'Current Level'}
           </div>
-          <div style={{ fontSize: '1.5rem', fontWeight: '700', color: '#1f2937', lineHeight: 1.1 }}>
+          <div style={{ fontSize: isMobile ? '1.125rem' : '1.5rem', fontWeight: '700', color: '#1f2937', lineHeight: 1.1 }}>
             {isPt ? 'Nível' : 'Level'} {currentLevel}
           </div>
-          <div style={{ fontSize: '0.8125rem', color: '#6b7280', marginTop: '0.25rem' }}>
+          <div style={{ fontSize: isMobile ? '0.6875rem' : '0.8125rem', color: '#6b7280', marginTop: '0.25rem' }}>
             {levelFullName(currentLevel)}
           </div>
         </div>
@@ -11920,12 +12833,12 @@ function BenchmarksViewV2({ assessments, customers, t }) {
           background: 'white',
           border: '1px solid #e5e7eb',
           borderRadius: '12px',
-          padding: '1.25rem'
+          padding: isMobile ? '0.875rem' : '1.25rem'
         }}>
           <div style={{ fontSize: '0.6875rem', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: '600', marginBottom: '0.5rem' }}>
             {isPt ? 'Posição no Benchmark' : 'Benchmark Position'}
           </div>
-          <div style={{ fontSize: '2rem', fontWeight: '700', color: '#1f2937', lineHeight: 1.1 }}>
+          <div style={{ fontSize: isMobile ? '1.5rem' : '2rem', fontWeight: '700', color: '#1f2937', lineHeight: 1.1 }}>
             P{percentile}
           </div>
           <div style={{ fontSize: '0.75rem', color: '#9ca3af', marginTop: '0.25rem' }}>
@@ -11938,7 +12851,7 @@ function BenchmarksViewV2({ assessments, customers, t }) {
           background: 'white',
           border: '1px solid #e5e7eb',
           borderRadius: '12px',
-          padding: '1.25rem'
+          padding: isMobile ? '0.875rem' : '1.25rem'
         }}>
           <div style={{ fontSize: '0.6875rem', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: '600', marginBottom: '0.5rem' }}>
             {isPt ? 'Evolução' : 'Evolution'}
@@ -11946,7 +12859,7 @@ function BenchmarksViewV2({ assessments, customers, t }) {
           {scoreDelta !== null ? (
             <>
               <div style={{ 
-                fontSize: '2rem', 
+                fontSize: isMobile ? '1.5rem' : '2rem', 
                 fontWeight: '700', 
                 color: scoreDelta > 0 ? '#059669' : scoreDelta < 0 ? '#dc2626' : '#6b7280', 
                 lineHeight: 1.1 
@@ -11992,7 +12905,7 @@ function BenchmarksViewV2({ assessments, customers, t }) {
         <h3 style={{ margin: '0 0 1rem 0', fontSize: '1.125rem', color: '#1f2937', fontWeight: '600' }}>
           {isPt ? 'O que este resultado significa' : 'What this result means'}
         </h3>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1.25rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fit, minmax(240px, 1fr))', gap: isMobile ? '1rem' : '1.25rem' }}>
           <div>
             <div style={{ fontSize: '0.75rem', color: '#6b7280', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>
               {isPt ? 'Estado atual' : 'Current state'}
@@ -12058,7 +12971,7 @@ function BenchmarksViewV2({ assessments, customers, t }) {
         </div>
         <div style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
+          gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(auto-fit, minmax(120px, 1fr))',
           gap: '0.625rem',
           marginBottom: '0.875rem'
         }}>
@@ -12260,7 +13173,8 @@ function BenchmarksViewV2({ assessments, customers, t }) {
         <h3 style={{ margin: '0 0 1rem 0', fontSize: '1.125rem', color: '#1f2937', fontWeight: '600' }}>
           {isPt ? 'Principais Gaps para Evolução' : 'Main Gaps for Evolution'}
         </h3>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+        <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem', minWidth: isMobile ? '480px' : 'auto' }}>
           <thead>
             <tr style={{ borderBottom: '1px solid #e5e7eb' }}>
               <th style={{ textAlign: 'left', padding: '0.625rem 0.5rem', color: '#6b7280', fontWeight: '600', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
@@ -12299,6 +13213,7 @@ function BenchmarksViewV2({ assessments, customers, t }) {
             ))}
           </tbody>
         </table>
+        </div>
         <div style={{
           marginTop: '1.25rem',
           fontSize: '0.875rem',
@@ -12323,7 +13238,8 @@ function BenchmarksViewV2({ assessments, customers, t }) {
           <h3 style={{ margin: '0 0 1rem 0', fontSize: '1.125rem', color: '#1f2937', fontWeight: '600' }}>
             {isPt ? 'Recomendações Prioritárias' : 'Priority Recommendations'}
           </h3>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+          <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem', minWidth: isMobile ? '640px' : 'auto' }}>
             <thead>
               <tr style={{ borderBottom: '1px solid #e5e7eb' }}>
                 <th style={{ textAlign: 'left', padding: '0.625rem 0.5rem', color: '#6b7280', fontWeight: '600', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
@@ -12359,6 +13275,7 @@ function BenchmarksViewV2({ assessments, customers, t }) {
               ))}
             </tbody>
           </table>
+          </div>
           <div style={{
             marginTop: '1.25rem',
             fontSize: '0.875rem',
@@ -12368,6 +13285,118 @@ function BenchmarksViewV2({ assessments, customers, t }) {
             {isPt 
               ? 'O próximo salto de maturidade não depende apenas de instrumentação. Depende de foco, padrão e governança.'
               : 'The next maturity leap does not depend only on instrumentation. It depends on focus, standard, and governance.'}
+          </div>
+        </div>
+      )}
+      
+      {/* ==================== 8.5. TENDÊNCIA MULTI-PERÍODO (v42) ==================== */}
+      {sortedAssess.length >= 2 && (
+        <div style={{
+          background: 'white',
+          border: '1px solid #e5e7eb',
+          borderRadius: '12px',
+          padding: '1.5rem',
+          marginBottom: '1.5rem'
+        }}>
+          <h3 style={{ margin: '0 0 0.5rem 0', fontSize: '1.125rem', color: '#1f2937', fontWeight: '600' }}>
+            {isPt ? 'Tendência ao longo do tempo' : 'Trend over time'}
+          </h3>
+          <p style={{ margin: '0 0 1.25rem 0', fontSize: '0.8125rem', color: '#6b7280' }}>
+            {isPt 
+              ? 'A maturidade deve ser acompanhada como tendência, não apenas como fotografia.'
+              : 'Maturity should be tracked as a trend, not just a snapshot.'}
+          </p>
+          {(() => {
+            // Build chart data: oldest → newest, plus a projected target dot
+            const trendPoints = [...sortedAssess]
+              .sort((a, b) => new Date(a.date) - new Date(b.date))
+              .map(a => ({
+                date: new Date(a.date).toLocaleDateString(t.locale, { month: 'short', year: '2-digit' }),
+                score: Number(a.rawScore.toFixed(2)),
+                level: a.finalLevel,
+                isProjected: false
+              }));
+            // Add target as dotted projection
+            const targetScore = Math.min(5, currentScore + 0.5);
+            trendPoints.push({
+              date: isPt ? 'Próx. meta' : 'Next target',
+              score: targetScore,
+              level: null,
+              isProjected: true
+            });
+            
+            const minScore = Math.max(0, Math.min(...trendPoints.map(p => p.score)) - 0.3);
+            const maxScore = Math.min(5, Math.max(...trendPoints.map(p => p.score)) + 0.3);
+            
+            return (
+              <ResponsiveContainer width="100%" height={240}>
+                <LineChart data={trendPoints} margin={{ top: 10, right: 20, left: 0, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+                  <XAxis 
+                    dataKey="date" 
+                    tick={{ fill: '#6b7280', fontSize: 12 }}
+                    stroke="#d1d5db"
+                  />
+                  <YAxis 
+                    domain={[minScore, maxScore]} 
+                    tick={{ fill: '#6b7280', fontSize: 12 }}
+                    stroke="#d1d5db"
+                    tickFormatter={(v) => v.toFixed(1)}
+                  />
+                  <Tooltip 
+                    contentStyle={{ background: 'white', border: '1px solid #e5e7eb', borderRadius: '8px', fontSize: '0.875rem' }}
+                    formatter={(value, name, props) => {
+                      const isProj = props?.payload?.isProjected;
+                      return [
+                        value.toFixed(2) + (isProj ? (isPt ? ' (meta)' : ' (target)') : ''),
+                        isPt ? 'Score' : 'Score'
+                      ];
+                    }}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="score"
+                    stroke="#632CA6"
+                    strokeWidth={2.5}
+                    dot={(props) => {
+                      const { cx, cy, payload, index } = props;
+                      const isProjected = payload?.isProjected;
+                      return (
+                        <circle
+                          key={`dot-${index}`}
+                          cx={cx}
+                          cy={cy}
+                          r={isProjected ? 5 : 4}
+                          fill={isProjected ? 'white' : '#632CA6'}
+                          stroke="#632CA6"
+                          strokeWidth={isProjected ? 2 : 1.5}
+                          strokeDasharray={isProjected ? '3 2' : undefined}
+                        />
+                      );
+                    }}
+                    activeDot={{ r: 6, fill: '#632CA6' }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            );
+          })()}
+          <div style={{
+            marginTop: '0.875rem',
+            display: 'flex',
+            gap: '1rem',
+            fontSize: '0.6875rem',
+            color: '#6b7280',
+            flexWrap: 'wrap',
+            justifyContent: 'center'
+          }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+              <span style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#632CA6', display: 'inline-block' }} />
+              {isPt ? 'Avaliação realizada' : 'Completed assessment'}
+            </span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+              <span style={{ width: '10px', height: '10px', borderRadius: '50%', background: 'white', border: '2px dashed #632CA6', display: 'inline-block' }} />
+              {isPt ? 'Próxima meta' : 'Next target'}
+            </span>
           </div>
         </div>
       )}
@@ -12389,7 +13418,7 @@ function BenchmarksViewV2({ assessments, customers, t }) {
             : 'Maturity should be tracked as a trend, not just a snapshot.'}
         </p>
         {previousScore !== null ? (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fit, minmax(160px, 1fr))', gap: '1rem' }}>
             <div style={{ textAlign: 'center', padding: '1rem', background: '#f9fafb', borderRadius: '8px' }}>
               <div style={{ fontSize: '0.75rem', color: '#6b7280', fontWeight: '600', marginBottom: '0.375rem' }}>
                 {isPt ? 'Avaliação anterior' : 'Previous assessment'}
@@ -12475,7 +13504,7 @@ function BenchmarksViewV2({ assessments, customers, t }) {
             ? 'Esta avaliação considera critérios de maturidade relacionados a monitoramento, observabilidade ponta a ponta, governança, padronização e conexão com impacto operacional. Os resultados devem ser interpretados em conjunto com contexto organizacional, arquitetura e criticidade dos serviços avaliados.'
             : 'This assessment considers maturity criteria related to monitoring, end-to-end observability, governance, standardization, and connection to operational impact. Results should be interpreted together with organizational context, architecture, and criticality of evaluated services.'}
         </p>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem', marginTop: '0.75rem', fontSize: '0.75rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem', marginTop: '0.75rem', fontSize: '0.75rem' }}>
           <div>
             <div style={{ color: '#9ca3af', fontWeight: '600' }}>{isPt ? 'Tamanho da amostra' : 'Sample size'}</div>
             <div style={{ color: '#374151' }}>{sampleSize} {isPt ? 'avaliações' : 'assessments'}</div>
@@ -12488,10 +13517,24 @@ function BenchmarksViewV2({ assessments, customers, t }) {
           </div>
           <div>
             <div style={{ color: '#9ca3af', fontWeight: '600' }}>{isPt ? 'Coorte' : 'Cohort'}</div>
-            <div style={{ color: '#374151' }}>{isPt ? 'Amostra geral disponível' : 'General sample available'}</div>
+            <div style={{ color: '#374151' }}>{cohortLabel}</div>
           </div>
         </div>
       </div>
+      
+      {/* v42: Export modal — reuses the same component used by Action Plan */}
+      {exportModalContent && (
+        <ExportPlanModal
+          content={exportModalContent.markdown}
+          filename={exportModalContent.filename}
+          isPt={isPt}
+          t={t}
+          onClose={() => setExportModalContent(null)}
+          showNotification={(msg, type) => {
+            console.log(`[Benchmark Export] ${type}: ${msg}`);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -12619,8 +13662,8 @@ function BenchmarksView({ assessments, customers, t }) {
         {t.benchmarksTitle}
       </h2>
 
-      {/* Statistics Cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '1rem', marginBottom: '2rem' }}>
+      {/* Statistics Cards — v43: auto-fit for mobile */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '1rem', marginBottom: '2rem' }}>
         <KPICard title={t.average} value={avg.toFixed(2)} color="#632CA6" />
         <KPICard title={t.median} value={median.toFixed(2)} color="#632CA6" />
         <KPICard title="P25" value={p25.toFixed(2)} color="#6b7280" subtitle={t.bottomQuartile} />
@@ -12859,10 +13902,10 @@ function HeatmapView({ customers, t }) {
         </div>
       </div>
 
-      {/* Insights Cards */}
+      {/* Insights Cards — v43: auto-fit for mobile */}
       <div style={{ 
         display: 'grid', 
-        gridTemplateColumns: 'repeat(3, 1fr)', 
+        gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', 
         gap: '1rem',
         marginBottom: '2rem'
       }}>
@@ -14077,7 +15120,639 @@ function Notification({ message, type, onClose }) {
   );
 }
 
-// Customer Detail Modal - Enhanced with radar chart, dimensions, and score evolution
+// ============================================================================
+// v45: COF (Customer Objective Framework) generator
+// ============================================================================
+// Generates Business Objectives, Success Metrics, and Expected Results from
+// an assessment using a deterministic heuristic. Output is consumable as
+// editable preview in the UI and as Markdown / JSON / PPTX-prompt exports.
+//
+// Why heuristic-first: works offline, no API key needed, instant. Users can
+// optionally refine with Anthropic API in the UI (toggle off by default).
+// ============================================================================
+
+// Maps a low-scoring dimension to a Business Objective skeleton.
+// Each entry produces title + description + metric/result seeds.
+// Bilingual: every text field has both pt and en variants.
+const COF_OBJECTIVE_TEMPLATES = {
+  adoption: {
+    title:       { pt: 'Acelerar adoção da plataforma Datadog',
+                   en: 'Accelerate Datadog platform adoption' },
+    description: { pt: 'Expandir cobertura de produtos e times para extrair valor consistente do investimento em observabilidade.',
+                   en: 'Expand product and team coverage to extract consistent value from the observability investment.' },
+    metricSeeds: [
+      { pt: 'Aumentar cobertura APM em 40%',           en: 'Increase APM coverage by 40%' },
+      { pt: 'Onboarding de 100% dos times críticos',    en: 'Onboard 100% of critical teams' },
+      { pt: 'Reduzir tempo de instrumentação em 60%',   en: 'Cut instrumentation time by 60%' },
+      { pt: 'Adotar 3 novos produtos Datadog',          en: 'Adopt 3 new Datadog products' },
+      { pt: 'Aumentar usuários ativos mensais em 50%',  en: 'Grow monthly active users by 50%' },
+      { pt: 'Cobrir 90% dos serviços com tracing',      en: 'Cover 90% of services with tracing' }
+    ],
+    resultSeeds: [
+      { pt: 'Visibilidade unificada via Datadog APM',   en: 'Unified visibility through Datadog APM' },
+      { pt: 'Redução de silos entre times de produto',  en: 'Reduced silos across product teams' },
+      { pt: 'Decisões baseadas em telemetria real',     en: 'Decisions backed by real telemetry' },
+      { pt: 'ROI acelerado do contrato Datadog',        en: 'Accelerated ROI on Datadog contract' },
+      { pt: 'Cultura de observabilidade consolidada',   en: 'Consolidated observability culture' }
+    ]
+  },
+  governance: {
+    title:       { pt: 'Estabelecer governança de observabilidade',
+                   en: 'Establish observability governance' },
+    description: { pt: 'Padronizar tagging, ownership e práticas para garantir consistência e accountability na operação.',
+                   en: 'Standardize tagging, ownership, and practices to ensure consistency and operational accountability.' },
+    metricSeeds: [
+      { pt: 'Atingir 95% de tag compliance',            en: 'Reach 95% tag compliance' },
+      { pt: 'Definir owner para 100% dos serviços',     en: 'Assign owner to 100% of services' },
+      { pt: 'Reduzir hosts órfãos em 80%',              en: 'Reduce orphan hosts by 80%' },
+      { pt: 'Implementar 5 SLOs de negócio',            en: 'Implement 5 business SLOs' },
+      { pt: 'Padronizar nomenclatura em 100% das envs', en: 'Standardize naming across 100% of envs' },
+      { pt: 'Auditoria mensal com 0 violações',         en: 'Monthly audit with zero violations' }
+    ],
+    resultSeeds: [
+      { pt: 'Custos de Datadog atribuíveis por time',   en: 'Datadog costs attributable per team' },
+      { pt: 'Triagem de incidentes 50% mais rápida',    en: 'Incident triage 50% faster' },
+      { pt: 'Compliance auditável via Datadog',         en: 'Auditable compliance through Datadog' },
+      { pt: 'Roadmap de observabilidade priorizado',    en: 'Prioritized observability roadmap' },
+      { pt: 'Accountability clara nos serviços',        en: 'Clear service accountability' }
+    ]
+  },
+  quality: {
+    title:       { pt: 'Elevar qualidade dos dados de telemetria',
+                   en: 'Elevate telemetry data quality' },
+    description: { pt: 'Garantir correlação entre logs, métricas e traces para acelerar root cause analysis com Datadog.',
+                   en: 'Ensure correlation across logs, metrics, and traces to accelerate root cause analysis with Datadog.' },
+    metricSeeds: [
+      { pt: 'Correlação log↔APM em 90% dos serviços',   en: 'Log↔APM correlation on 90% of services' },
+      { pt: 'Reduzir MTTR em 40%',                      en: 'Reduce MTTR by 40%' },
+      { pt: 'Cobertura de traces distribuídos: 95%',    en: 'Distributed trace coverage: 95%' },
+      { pt: 'Eliminar 100% das amostragens cegas',      en: 'Eliminate 100% of blind samplings' },
+      { pt: 'Reduzir logs não-estruturados em 70%',     en: 'Cut unstructured logs by 70%' },
+      { pt: 'Custom metrics com tagging completo',      en: 'Custom metrics with full tagging' }
+    ],
+    resultSeeds: [
+      { pt: 'Root cause analysis em minutos',           en: 'Root cause analysis in minutes' },
+      { pt: 'Investigação ponta-a-ponta no Datadog',    en: 'End-to-end investigation in Datadog' },
+      { pt: 'Detecção precoce de degradação',           en: 'Early degradation detection' },
+      { pt: 'Menos toil de troubleshooting',            en: 'Less troubleshooting toil' },
+      { pt: 'Maior confiança nos dashboards',           en: 'Higher confidence in dashboards' }
+    ]
+  },
+  alerting: {
+    title:       { pt: 'Otimizar estratégia de alerting',
+                   en: 'Optimize alerting strategy' },
+    description: { pt: 'Reduzir alert fatigue e direcionar alertas a destinatários certos via Datadog Monitors.',
+                   en: 'Reduce alert fatigue and route alerts to the right recipients through Datadog Monitors.' },
+    metricSeeds: [
+      { pt: 'Reduzir alert fatigue em 60%',             en: 'Reduce alert fatigue by 60%' },
+      { pt: '100% dos monitors com runbook',            en: '100% of monitors with runbook' },
+      { pt: 'Reduzir falsos positivos em 70%',          en: 'Cut false positives by 70%' },
+      { pt: 'MTTA abaixo de 5 minutos',                 en: 'MTTA below 5 minutes' },
+      { pt: 'Cobertura de SLO alerting: 100%',          en: 'SLO alerting coverage: 100%' },
+      { pt: 'Recipient mapping em 95% dos monitors',    en: 'Recipient mapping on 95% of monitors' }
+    ],
+    resultSeeds: [
+      { pt: 'On-call sustentável e menos churn',        en: 'Sustainable on-call and less churn' },
+      { pt: 'Resposta dirigida via Datadog',            en: 'Targeted response via Datadog' },
+      { pt: 'SLAs de produto cumpridos',                en: 'Product SLAs met' },
+      { pt: 'Confiança no signal-to-noise ratio',       en: 'Trust in signal-to-noise ratio' },
+      { pt: 'Foco em incidentes que importam',          en: 'Focus on incidents that matter' }
+    ]
+  },
+  cost: {
+    title:       { pt: 'Otimizar custo de observabilidade',
+                   en: 'Optimize observability cost' },
+    description: { pt: 'Aplicar Cloud Cost Management e práticas de retenção para manter previsibilidade do investimento Datadog.',
+                   en: 'Apply Cloud Cost Management and retention practices to keep Datadog investment predictable.' },
+    metricSeeds: [
+      { pt: 'Reduzir custo unitário em 25%',            en: 'Reduce unit cost by 25%' },
+      { pt: 'Eliminar 30% de custom metrics ociosos',   en: 'Eliminate 30% of idle custom metrics' },
+      { pt: 'Habilitar Logging Without Limits™',        en: 'Enable Logging Without Limits™' },
+      { pt: 'Forecast de custo com erro <5%',           en: 'Cost forecast within 5% error' },
+      { pt: 'Reduzir log indexing em 40%',              en: 'Cut log indexing by 40%' },
+      { pt: 'Tagging de cost allocation: 100%',         en: 'Cost allocation tagging: 100%' }
+    ],
+    resultSeeds: [
+      { pt: 'Previsibilidade do contrato Datadog',      en: 'Datadog contract predictability' },
+      { pt: 'Showback por business unit',               en: 'Showback by business unit' },
+      { pt: 'ROI demonstrável da observabilidade',      en: 'Demonstrable observability ROI' },
+      { pt: 'Otimização contínua via CCM',              en: 'Continuous optimization via CCM' },
+      { pt: 'Conversas de renovação data-driven',       en: 'Data-driven renewal conversations' }
+    ]
+  }
+};
+
+// Pick a small lang-tagged value from a seed list, capped to N words.
+function _capWords(text, maxWords) {
+  if (!text) return '';
+  const words = String(text).trim().split(/\s+/);
+  return words.length <= maxWords ? words.join(' ') : words.slice(0, maxWords).join(' ');
+}
+
+// Generate Business Objectives from an assessment using deterministic heuristics.
+// Selects up to 6 objectives, prioritizing the lowest-scoring dimensions.
+// Returns: { contextLine, businessObjectives: [{title, description, metrics: [...], expectedResults: [...]}] }
+function generateCOFAnalysis(assessment, customer, customerMeta, lang) {
+  const isPt = lang === 'pt';
+  if (!assessment) {
+    return {
+      contextLine: isPt ? 'Sem assessment disponível' : 'No assessment available',
+      businessObjectives: []
+    };
+  }
+
+  // Polymorphic dimension reader (CARE LIST item #1)
+  const dimScore = (d) => {
+    if (typeof d === 'number') return d;
+    if (d?.score !== undefined) return Number(d.score);
+    return 0;
+  };
+  const dims = assessment.dimensions || {};
+  const dimScores = [
+    { key: 'adoption',   score: dimScore(dims.adoption) },
+    { key: 'governance', score: dimScore(dims.governance) },
+    { key: 'quality',    score: dimScore(dims.quality) },
+    { key: 'alerting',   score: dimScore(dims.alerting) },
+    { key: 'cost',       score: dimScore(dims.cost) }
+  ].sort((a, b) => a.score - b.score);
+
+  // Build context line
+  const score = typeof assessment.score === 'number' ? assessment.score : null;
+  const finalLevel = typeof assessment.finalLevel === 'number'
+    ? assessment.finalLevel
+    : (score !== null ? Math.round(score) : 0);
+  const levelName = MATURITY_LEVELS[finalLevel]?.label?.[lang] || `Level ${finalLevel}`;
+  const accountId = assessment.inputData?.accountId || customer?.customerId || '—';
+  const industryLabel = customerMeta?.industry ? getIndustryLabel(customerMeta.industry, lang) : null;
+  const tierLabel = customerMeta?.tier ? getTierLabel(customerMeta.tier, lang) : null;
+  const cohortStr = [industryLabel, tierLabel].filter(Boolean).join(' · ');
+  const ctxParts = [];
+  ctxParts.push(levelName);
+  ctxParts.push(`Account: ${accountId}`);
+  if (score !== null) ctxParts.push(`Score: ${score.toFixed(2)}`);
+  if (cohortStr) ctxParts.push(cohortStr);
+  const contextLine = ctxParts.join(' · ');
+
+  // Pull recommendations to enrich metrics. classifiedRecommendations only has
+  // quickWins and strategic (CARE LIST item #7).
+  const recs = Array.isArray(assessment.recommendations) ? assessment.recommendations : [];
+
+  // Gap detection: dimensions with score < 3.5 are candidates for objectives
+  const lowDims = dimScores.filter(d => d.score < 3.5);
+  // If maturity is high across the board, still produce 2-3 objectives from
+  // the weakest dimensions to give the COF something actionable.
+  const targetDims = lowDims.length >= 2 ? lowDims : dimScores.slice(0, 3);
+
+  const businessObjectives = [];
+  for (const d of targetDims.slice(0, 6)) {
+    const tpl = COF_OBJECTIVE_TEMPLATES[d.key];
+    if (!tpl) continue;
+
+    // Metrics: take 4-6 from seeds, capped at 8 words each
+    const metrics = tpl.metricSeeds.slice(0, 6).map(m => _capWords(m[lang], 8));
+
+    // Expected Results: take 4-5 from seeds, capped at 8 words each
+    const expectedResults = tpl.resultSeeds.slice(0, 5).map(r => _capWords(r[lang], 8));
+
+    // Try to enrich description with a recommendation matching this dimension
+    let description = tpl.description[lang];
+    const matchingRec = recs.find(r =>
+      r && (r.dimension === d.key || (typeof r.dimension === 'string' && r.dimension.toLowerCase() === d.key))
+    );
+    if (matchingRec && matchingRec.expectedOutcome) {
+      // Keep base description but only if we have a strong rec — otherwise default
+      const extra = String(matchingRec.expectedOutcome).split('. ')[0];
+      if (extra && extra.length < 140) {
+        description = isPt
+          ? `${tpl.description[lang]} ${extra}.`.replace(/\.\.+/g, '.')
+          : `${tpl.description[lang]} ${extra}.`.replace(/\.\.+/g, '.');
+      }
+    }
+
+    businessObjectives.push({
+      key: d.key,
+      title: tpl.title[lang],
+      description,
+      metrics,
+      expectedResults
+    });
+  }
+
+  return { contextLine, businessObjectives };
+}
+
+// Build markdown export of the COF analysis (Etapa 1 + Etapa 2 mapping)
+function buildCOFMarkdown(customer, analysis, lang) {
+  const isPt = lang === 'pt';
+  const customerName = customer?.customerName || customer?.customerId || (isPt ? 'Cliente' : 'Customer');
+  const lines = [];
+  lines.push(`# ${customerName} — Customer Objective Framework`);
+  lines.push('');
+  lines.push(`> ${analysis.contextLine}`);
+  lines.push('');
+  lines.push(isPt ? '## Etapa 1 — Business Objectives' : '## Step 1 — Business Objectives');
+  lines.push('');
+  analysis.businessObjectives.forEach((bo, i) => {
+    lines.push(`### ${i + 1}. ${bo.title}`);
+    lines.push('');
+    lines.push(bo.description);
+    lines.push('');
+    lines.push(isPt ? '**Métricas de Sucesso:**' : '**Success Metrics:**');
+    bo.metrics.forEach(m => lines.push(`- ${m}`));
+    lines.push('');
+    lines.push(isPt ? '**Expected Results:**' : '**Expected Results:**');
+    bo.expectedResults.forEach(r => lines.push(`- ${r}`));
+    lines.push('');
+  });
+
+  // Etapa 2 — placeholder mapping for the PPTX template
+  lines.push('---');
+  lines.push('');
+  lines.push(isPt
+    ? '## Etapa 2 — Mapeamento para o template PPTX'
+    : '## Step 2 — PPTX Template Mapping');
+  lines.push('');
+  lines.push(`**[Title]** → ${customerName} — Customer Objective Framework`);
+  lines.push(`**[Description]** → ${analysis.contextLine}`);
+  lines.push('');
+  // Slide pagination: 3 objectives per slide
+  const slides = [];
+  for (let i = 0; i < analysis.businessObjectives.length; i += 3) {
+    slides.push(analysis.businessObjectives.slice(i, i + 3));
+  }
+  slides.forEach((slide, sIdx) => {
+    const slideNum = slides.length > 1 ? ` (${sIdx + 1}/${slides.length})` : '';
+    lines.push(`### Slide ${sIdx + 1}${slideNum}`);
+    lines.push('');
+    slide.forEach((bo, colIdx) => {
+      const n = colIdx + 1;
+      lines.push(`- **[Business Objectives ${n} Title]** → ${bo.title}`);
+      lines.push(`- **[Business Objectives ${n} Description]** → ${bo.description}`);
+      bo.metrics.forEach((m, mi) => lines.push(`  - **[Metrics ${mi + 1}]** (col ${n}) → ${m}`));
+      bo.expectedResults.forEach((r, ri) => lines.push(`  - **[Activities ${ri + 1}]** (col ${n}) → ${r}`));
+      lines.push('');
+    });
+    if (slide.length < 3) {
+      lines.push(isPt
+        ? `> _Remover colunas ${slide.length + 1}–3 do slide._`
+        : `> _Remove columns ${slide.length + 1}–3 from slide._`);
+      lines.push('');
+    }
+  });
+  lines.push('---');
+  lines.push('');
+  lines.push(isPt
+    ? '> **Lembrete:** substituir o rótulo "Key Activities" por "Expected Results" na sidebar.'
+    : '> **Reminder:** replace the "Key Activities" label with "Expected Results" in the sidebar.');
+  return lines.join('\n');
+}
+
+// Build a JSON export of the COF analysis
+function buildCOFJSON(customer, analysis, lang) {
+  const customerName = customer?.customerName || customer?.customerId || 'customer';
+  return JSON.stringify({
+    title: `${customerName} — Customer Objective Framework`,
+    description: analysis.contextLine,
+    language: lang,
+    sidebarLabels: ['Vision', 'Business Objectives', 'Metrics', 'Expected Results'],
+    businessObjectives: analysis.businessObjectives.map(bo => ({
+      title: bo.title,
+      description: bo.description,
+      metrics: bo.metrics,
+      expectedResults: bo.expectedResults
+    }))
+  }, null, 2);
+}
+
+// Build a ready-to-paste prompt that includes the analysis embedded —
+// user pastes into Claude with the .pptx template attached and gets back
+// a fully-filled deck. This is the "PPTX bridge" since the iframe can't
+// generate binary PPTX directly.
+function buildCOFPrompt(customer, analysis, lang) {
+  const isPt = lang === 'pt';
+  const customerName = customer?.customerName || customer?.customerId || (isPt ? 'Cliente' : 'Customer');
+  const json = buildCOFJSON(customer, analysis, lang);
+  const intro = isPt
+    ? `Anexei o arquivo "_customer_ID_-_customer_name_-_Customer_Objective_Framework_Template.pptx" e abaixo está a análise pronta. Sua tarefa: preencher o template PPTX substituindo todos os placeholders [ ] pelos valores fornecidos. Regras críticas:`
+    : `I've attached the file "_customer_ID_-_customer_name_-_Customer_Objective_Framework_Template.pptx" and below is the prepared analysis. Your task: fill the PPTX template by replacing all [ ] placeholders with the values provided. Critical rules:`;
+  const rules = isPt
+    ? [
+        '1. Cada slide comporta até 3 Business Objectives (3 colunas).',
+        '2. Se houver mais de 3, duplicar o slide e distribuir sequencialmente.',
+        '3. Substituir o rótulo "Key Activities" por "Expected Results" na sidebar.',
+        '4. Se o último slide tiver menos de 3 objetivos, remover as colunas não usadas (não deixar placeholders vazios).',
+        '5. Adicionar sufixo "(N/M)" no [Title] quando houver múltiplos slides.',
+        '6. Preservar layout, cores, fontes, ícones, logo Datadog e sidebar.',
+        '7. Garantir que nenhum texto cause overflow.',
+        '8. Validar que nenhum [ ] permanece no resultado final.',
+        '9. Entregar o arquivo final como .pptx pronto para apresentação.'
+      ]
+    : [
+        '1. Each slide holds up to 3 Business Objectives (3 columns).',
+        '2. If more than 3, duplicate the slide and distribute sequentially.',
+        '3. Replace the "Key Activities" label with "Expected Results" in the sidebar.',
+        '4. If the last slide has fewer than 3 objectives, remove the unused columns (do not leave empty placeholders).',
+        '5. Append "(N/M)" suffix to [Title] when there are multiple slides.',
+        '6. Preserve layout, colors, fonts, icons, Datadog logo, and sidebar.',
+        '7. Ensure no text overflows its boxes.',
+        '8. Verify no [ ] placeholders remain in the final output.',
+        '9. Deliver the final file as a presentation-ready .pptx.'
+      ];
+  const dataLabel = isPt ? 'DADOS DA ANÁLISE (JSON):' : 'ANALYSIS DATA (JSON):';
+  return `${intro}\n\n${rules.join('\n')}\n\n${dataLabel}\n\`\`\`json\n${json}\n\`\`\`\n`;
+}
+
+// ============================================================================
+// v45.1: PPTX generation via JSZip + XML manipulation
+// ============================================================================
+// Strategy: download the .pptx template (hosted at /cof-template.pptx in the
+// public folder), unpack it as a ZIP using JSZip, manipulate the slide XML
+// directly (preserving 100% of the original layout/colors/fonts/logo), then
+// repack and trigger a download. No server, no PptxGenJS reconstruction.
+//
+// Why this works:
+// - The template ships with the app as a static asset (cached after 1st load).
+// - PPTX is a ZIP of XML; we only edit ppt/slides/slide1.xml plus a few
+//   manifest files (presentation.xml, _rels/presentation.xml.rels,
+//   [Content_Types].xml) when generating multiple slides.
+// - Validated against a Python prototype that produced pixel-perfect output.
+// ============================================================================
+
+// Path to the template asset. MUST be deployed to /public/cof-template.pptx
+// so Vercel serves it at the root URL.
+const COF_TEMPLATE_URL = '/cof-template.pptx';
+
+// Shape ID map (extracted from the template by inspecting the XML).
+// The Datadog COF template uses Google Slides-generated shape IDs that
+// happen to be stable across exports.
+const COF_COLUMN_SHAPES = {
+  0: { title: 444, description: 451, metrics: 445, activities: 446 },
+  1: { title: 452, description: 453, metrics: 456, activities: 458 },
+  2: { title: 454, description: 455, metrics: 457, activities: 459 }
+};
+const COF_COLUMN_CARD_IDS = {
+  0: [427, 428, 429, 432],
+  1: [423, 424, 430, 433],
+  2: [425, 426, 431, 434]
+};
+
+// Regex source for matching an <a:rPr ...> element — either self-closing
+// or with children (closed via </a:rPr>). Used inside the fragmented label
+// regex below. The negative-lookahead (?!<a:rPr) prevents nested-greedy mismatches.
+const COF_RPR_RE_SRC = '<a:rPr[^>]*(?:\\/>|>(?:(?!<a:rPr).)*?<\\/a:rPr>)';
+
+function _xmlEscape(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function _escapeRegExp(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Replace fragmented labels [Title] / [Description] which the template
+// stores as 3 separate runs: '[' + 'Title' + ']'. We collapse to a single
+// run keeping the middle run's rPr (which has the actual styling).
+function _replaceFragmentedLabel(xml, label, value) {
+  const safe = _xmlEscape(value);
+  const re = new RegExp(
+    '<a:r>(' + COF_RPR_RE_SRC + ')<a:t>\\[</a:t></a:r>' +
+    '<a:r>(' + COF_RPR_RE_SRC + ')<a:t>' + _escapeRegExp(label) + '</a:t></a:r>' +
+    '<a:r>(' + COF_RPR_RE_SRC + ')<a:t>\\]</a:t></a:r>',
+    's'
+  );
+  return xml.replace(re, (_m, _r1, midRpr) => {
+    return '<a:r>' + midRpr + '<a:t>' + safe + '</a:t></a:r>';
+  });
+}
+
+// Find <p:sp>...</p:sp> wrapping a given shape_id ('id="N"' attribute).
+// Returns [start, end] or null. Used to scope per-column edits.
+function _findShapeRange(xml, shapeId) {
+  const needle = `id="${shapeId}"`;
+  const idx = xml.indexOf(needle);
+  if (idx < 0) return null;
+  const spStart = xml.lastIndexOf('<p:sp>', idx);
+  if (spStart < 0) return null;
+  const spEnd = xml.indexOf('</p:sp>', spStart);
+  if (spEnd < 0) return null;
+  return [spStart, spEnd + '</p:sp>'.length];
+}
+
+// Substitute placeholders inside one column's shapes.
+function _replaceInColumn(xml, colIdx, objective) {
+  const shapes = COF_COLUMN_SHAPES[colIdx];
+
+  // Title (atomic — full string in one <a:t>)
+  const titleRange = _findShapeRange(xml, shapes.title);
+  if (titleRange) {
+    const [s, e] = titleRange;
+    const ph = `[Business Objectives ${colIdx + 1} Title]`;
+    const re = new RegExp('<a:t>' + _escapeRegExp(ph) + '</a:t>', 'g');
+    const updated = xml.slice(s, e).replace(re, '<a:t>' + _xmlEscape(objective.title || '') + '</a:t>');
+    xml = xml.slice(0, s) + updated + xml.slice(e);
+  }
+
+  // Description
+  const descRange = _findShapeRange(xml, shapes.description);
+  if (descRange) {
+    const [s, e] = descRange;
+    const ph = `[Business Objectives ${colIdx + 1} Description]`;
+    const re = new RegExp('<a:t>' + _escapeRegExp(ph) + '</a:t>', 'g');
+    const updated = xml.slice(s, e).replace(re, '<a:t>' + _xmlEscape(objective.description || '') + '</a:t>');
+    xml = xml.slice(0, s) + updated + xml.slice(e);
+  }
+
+  // Metrics (up to 6)
+  const metrics = (objective.metrics || []).slice(0, 6);
+  const metricsRange = _findShapeRange(xml, shapes.metrics);
+  if (metricsRange) {
+    const [s, e] = metricsRange;
+    let block = xml.slice(s, e);
+    for (let i = 0; i < 6; i++) {
+      const value = metrics[i] || '';
+      // Template has [Metrics 6 (missing closing bracket) — handle both
+      const re = new RegExp('<a:t>\\[Metrics ' + (i + 1) + '\\]?</a:t>', 'g');
+      block = block.replace(re, '<a:t>' + _xmlEscape(value) + '</a:t>');
+    }
+    xml = xml.slice(0, s) + block + xml.slice(e);
+  }
+
+  // Expected Results (up to 5) — placeholder is named [Activities N]
+  const results = (objective.expectedResults || []).slice(0, 5);
+  const actRange = _findShapeRange(xml, shapes.activities);
+  if (actRange) {
+    const [s, e] = actRange;
+    let block = xml.slice(s, e);
+    for (let i = 0; i < 5; i++) {
+      const value = results[i] || '';
+      const re = new RegExp('<a:t>\\[Activities ' + (i + 1) + '\\]</a:t>', 'g');
+      block = block.replace(re, '<a:t>' + _xmlEscape(value) + '</a:t>');
+    }
+    xml = xml.slice(0, s) + block + xml.slice(e);
+  }
+
+  return xml;
+}
+
+// Remove an entire column (cards + text shapes) when fewer than 3 objectives
+// land on a slide. We delete <p:sp> elements rather than emptying them so
+// no ghost containers remain.
+function _removeColumn(xml, colIdx) {
+  const ids = [...COF_COLUMN_CARD_IDS[colIdx], ...Object.values(COF_COLUMN_SHAPES[colIdx])];
+  for (const sid of ids) {
+    const range = _findShapeRange(xml, sid);
+    if (range) {
+      const [s, e] = range;
+      xml = xml.slice(0, s) + xml.slice(e);
+    }
+  }
+  return xml;
+}
+
+// Build the XML for one slide given up to 3 objectives.
+function _buildSlideXml(templateXml, objectives, titleValue, descriptionValue, slideIdx, totalSlides) {
+  let xml = templateXml;
+  const titleFull = totalSlides > 1
+    ? `${titleValue} (${slideIdx + 1}/${totalSlides})`
+    : titleValue;
+  xml = _replaceFragmentedLabel(xml, 'Title', titleFull);
+  xml = _replaceFragmentedLabel(xml, 'Description', descriptionValue);
+  // Sidebar: "Key Activities" → "Expected Results"
+  xml = xml.replace(/<a:t>Key Activities<\/a:t>/g, '<a:t>Expected Results</a:t>');
+  // Per-column substitution / removal
+  for (let c = 0; c < 3; c++) {
+    if (c < objectives.length) {
+      xml = _replaceInColumn(xml, c, objectives[c]);
+    } else {
+      xml = _removeColumn(xml, c);
+    }
+  }
+  return xml;
+}
+
+// Lazy-load JSZip from cdnjs (same pattern used elsewhere in this app for pdf.js).
+let _cofJSZipPromise = null;
+function _loadJSZip() {
+  if (window.JSZip) return Promise.resolve(window.JSZip);
+  if (_cofJSZipPromise) return _cofJSZipPromise;
+  _cofJSZipPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+    script.onload = () => {
+      if (window.JSZip) resolve(window.JSZip);
+      else reject(new Error('JSZip loaded but not exposed on window'));
+    };
+    script.onerror = () => {
+      _cofJSZipPromise = null;
+      reject(new Error('Failed to load JSZip from CDN'));
+    };
+    document.head.appendChild(script);
+  });
+  return _cofJSZipPromise;
+}
+
+// Main entry point — generate the final .pptx as a Blob and return it.
+// Caller is responsible for triggering the download (via blob URL) or
+// handling fallbacks if the iframe blocks the download.
+async function generateCOFPPTX(customer, analysis, lang) {
+  const isPt = lang === 'pt';
+  const customerName = customer?.customerName || customer?.customerId || (isPt ? 'Cliente' : 'Customer');
+  const titleValue = `${customerName} — Customer Objective Framework`;
+  const descriptionValue = analysis.contextLine || '';
+
+  // 1) Load JSZip
+  const JSZipLib = await _loadJSZip();
+
+  // 2) Fetch the template asset (cached after first load)
+  const resp = await fetch(COF_TEMPLATE_URL);
+  if (!resp.ok) {
+    throw new Error(`Failed to fetch template: HTTP ${resp.status}. Verify cof-template.pptx is at /public/cof-template.pptx in the deployment.`);
+  }
+  const templateBuffer = await resp.arrayBuffer();
+
+  // 3) Open as ZIP and extract the files we need
+  const zip = await JSZipLib.loadAsync(templateBuffer);
+  const slideTemplateXml = await zip.file('ppt/slides/slide1.xml').async('string');
+  const slideRelsTemplate = await zip.file('ppt/slides/_rels/slide1.xml.rels').async('string');
+  let presXml = await zip.file('ppt/presentation.xml').async('string');
+  let presRelsXml = await zip.file('ppt/_rels/presentation.xml.rels').async('string');
+  let contentTypesXml = await zip.file('[Content_Types].xml').async('string');
+
+  // 4) Chunk objectives into groups of 3 (one per slide)
+  const objs = analysis.businessObjectives || [];
+  const chunks = [];
+  if (objs.length === 0) {
+    chunks.push([]); // still produce one slide, empty columns will be removed
+  } else {
+    for (let i = 0; i < objs.length; i += 3) {
+      chunks.push(objs.slice(i, i + 3));
+    }
+  }
+  const totalSlides = chunks.length;
+
+  // 5) Build XML for each slide
+  const slideXmls = chunks.map((chunk, i) =>
+    _buildSlideXml(slideTemplateXml, chunk, titleValue, descriptionValue, i, totalSlides)
+  );
+
+  // 6) Replace slide1.xml with the first generated slide
+  zip.file('ppt/slides/slide1.xml', slideXmls[0]);
+
+  // 7) For multi-slide outputs, add slides 2..N + patch manifests
+  if (totalSlides > 1) {
+    // Find existing sldIdLst contents
+    const sldLstMatch = presXml.match(/<p:sldIdLst>([\s\S]*?)<\/p:sldIdLst>/);
+    if (sldLstMatch) {
+      const existing = sldLstMatch[1];
+      const lastIdMatch = existing.match(/<p:sldId\s+id="(\d+)"/);
+      const lastId = lastIdMatch ? parseInt(lastIdMatch[1], 10) : 256;
+      let newEntries = '';
+      for (let k = 1; k < totalSlides; k++) {
+        const newId = lastId + k;
+        const newRid = `rIdSlide${k + 1}`;
+        newEntries += `<p:sldId id="${newId}" r:id="${newRid}"/>`;
+      }
+      presXml = presXml.replace(
+        `<p:sldIdLst>${existing}</p:sldIdLst>`,
+        `<p:sldIdLst>${existing}${newEntries}</p:sldIdLst>`
+      );
+    }
+    // Add Relationship entries
+    let relAdditions = '';
+    for (let k = 1; k < totalSlides; k++) {
+      const newRid = `rIdSlide${k + 1}`;
+      relAdditions += `<Relationship Id="${newRid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide${k + 1}.xml"/>`;
+    }
+    presRelsXml = presRelsXml.replace('</Relationships>', `${relAdditions}</Relationships>`);
+    // Add Content_Types overrides
+    let ctAdditions = '';
+    for (let k = 1; k < totalSlides; k++) {
+      ctAdditions += `<Override PartName="/ppt/slides/slide${k + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>`;
+    }
+    contentTypesXml = contentTypesXml.replace('</Types>', `${ctAdditions}</Types>`);
+    // Write extra slides + their rels
+    for (let k = 1; k < totalSlides; k++) {
+      zip.file(`ppt/slides/slide${k + 1}.xml`, slideXmls[k]);
+      zip.file(`ppt/slides/_rels/slide${k + 1}.xml.rels`, slideRelsTemplate);
+    }
+  }
+  zip.file('ppt/presentation.xml', presXml);
+  zip.file('ppt/_rels/presentation.xml.rels', presRelsXml);
+  zip.file('[Content_Types].xml', contentTypesXml);
+
+  // 8) Generate the final blob
+  const blob = await zip.generateAsync({
+    type: 'blob',
+    mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    compression: 'DEFLATE',
+    compressionOptions: { level: 6 }
+  });
+  return { blob, totalSlides };
+}
+
 // ============================================================================
 // v40: ActionPlanTab — full action plan management UI
 // ============================================================================
@@ -14922,6 +16597,811 @@ function ExportPlanModal({ content, filename, isPt, t, onClose, showNotification
   );
 }
 
+
+// ============================================================================
+// v45: GenerateCOFTab — Customer Objective Framework generator
+// ============================================================================
+// 3 steps: Analyze (heuristic) → Edit Preview → Export (Markdown/JSON/Prompt)
+// Fully bilingual. Uses ExportPlanModal for the iframe-safe copy/download.
+// Optional "Refine with AI" toggle (off by default) calls Anthropic API.
+// ============================================================================
+function GenerateCOFTab({ customer, latestAssessment, t, showNotification }) {
+  const lang = t.locale === 'pt-BR' ? 'pt' : 'en';
+  const isPt = lang === 'pt';
+  const isMobile = useIsMobile();
+
+  // Load customer meta (industry/tier) for cohort context
+  const customerMeta = useMemo(
+    () => loadCustomerMeta(customer?.customerId),
+    [customer?.customerId]
+  );
+
+  // Language banner: detect mismatch between assessment and current UI lang
+  const assessmentLang = latestAssessment?.inputData?.language || latestAssessment?.language || null;
+  const langMismatch = assessmentLang && assessmentLang !== lang && assessmentLang !== (isPt ? 'pt' : 'en');
+
+  // Editable analysis state — initialized from heuristic
+  const [analysis, setAnalysis] = useState(() =>
+    generateCOFAnalysis(latestAssessment, customer, customerMeta, lang)
+  );
+  // Re-run heuristic when language changes (so seeds are localized)
+  useEffect(() => {
+    setAnalysis(generateCOFAnalysis(latestAssessment, customer, customerMeta, lang));
+  }, [lang, latestAssessment, customer, customerMeta]);
+
+  // Export modal state
+  const [exportContent, setExportContent] = useState(null);
+  const [exportFilename, setExportFilename] = useState('cof.md');
+
+  // Optional AI refinement (off by default; user toggles on)
+  const [aiEnabled, setAiEnabled] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
+
+  // v45.1: PPTX export state — declared BEFORE any early return (Rules of Hooks).
+  const [pptxBusy, setPptxBusy] = useState(false);
+  const [pptxFallback, setPptxFallback] = useState(null); // { url, filename, totalSlides } when iframe blocks auto-download
+  const [showMoreExports, setShowMoreExports] = useState(false);
+
+  if (!latestAssessment) {
+    return (
+      <div style={{
+        padding: '2rem',
+        textAlign: 'center',
+        color: '#6b7280',
+        background: '#f9fafb',
+        borderRadius: '8px',
+        border: '1px dashed #d1d5db'
+      }}>
+        {isPt
+          ? 'Nenhum assessment encontrado para este cliente. Faça uma avaliação primeiro.'
+          : 'No assessment found for this customer. Run an assessment first.'}
+      </div>
+    );
+  }
+
+  // === Mutators ============================================================
+  const updateContextLine = (val) => setAnalysis(a => ({ ...a, contextLine: val }));
+  const updateBO = (idx, patch) => setAnalysis(a => ({
+    ...a,
+    businessObjectives: a.businessObjectives.map((bo, i) => i === idx ? { ...bo, ...patch } : bo)
+  }));
+  const updateMetric = (boIdx, mIdx, val) => setAnalysis(a => ({
+    ...a,
+    businessObjectives: a.businessObjectives.map((bo, i) => {
+      if (i !== boIdx) return bo;
+      const metrics = [...bo.metrics];
+      metrics[mIdx] = val;
+      return { ...bo, metrics };
+    })
+  }));
+  const updateResult = (boIdx, rIdx, val) => setAnalysis(a => ({
+    ...a,
+    businessObjectives: a.businessObjectives.map((bo, i) => {
+      if (i !== boIdx) return bo;
+      const expectedResults = [...bo.expectedResults];
+      expectedResults[rIdx] = val;
+      return { ...bo, expectedResults };
+    })
+  }));
+  const removeBO = (idx) => setAnalysis(a => ({
+    ...a,
+    businessObjectives: a.businessObjectives.filter((_, i) => i !== idx)
+  }));
+  const addMetric = (boIdx) => setAnalysis(a => ({
+    ...a,
+    businessObjectives: a.businessObjectives.map((bo, i) =>
+      i === boIdx && bo.metrics.length < 6
+        ? { ...bo, metrics: [...bo.metrics, isPt ? 'Nova métrica' : 'New metric'] }
+        : bo
+    )
+  }));
+  const removeMetric = (boIdx, mIdx) => setAnalysis(a => ({
+    ...a,
+    businessObjectives: a.businessObjectives.map((bo, i) =>
+      i === boIdx ? { ...bo, metrics: bo.metrics.filter((_, j) => j !== mIdx) } : bo
+    )
+  }));
+  const addResult = (boIdx) => setAnalysis(a => ({
+    ...a,
+    businessObjectives: a.businessObjectives.map((bo, i) =>
+      i === boIdx && bo.expectedResults.length < 5
+        ? { ...bo, expectedResults: [...bo.expectedResults, isPt ? 'Novo resultado' : 'New result'] }
+        : bo
+    )
+  }));
+  const removeResult = (boIdx, rIdx) => setAnalysis(a => ({
+    ...a,
+    businessObjectives: a.businessObjectives.map((bo, i) =>
+      i === boIdx ? { ...bo, expectedResults: bo.expectedResults.filter((_, j) => j !== rIdx) } : bo
+    )
+  }));
+  const regenerate = () => {
+    setAnalysis(generateCOFAnalysis(latestAssessment, customer, customerMeta, lang));
+    showNotification(isPt ? 'Análise regenerada' : 'Analysis regenerated', 'success');
+  };
+
+  // === AI refinement (optional) ==========================================
+  // Calls the Anthropic API to refine the heuristic output. Only runs when
+  // user explicitly toggles + clicks. Falls back gracefully on any error.
+  const refineWithAI = async () => {
+    setAiBusy(true);
+    try {
+      const userMsg = isPt
+        ? `Refine os Business Objectives abaixo para ficarem mais executivos e alinhados ao Datadog. Mantenha exatamente o mesmo número de objetivos, métricas (até 8 palavras cada) e expected results (até 8 palavras cada). Retorne APENAS JSON válido com a mesma estrutura.\n\n${JSON.stringify(analysis, null, 2)}`
+        : `Refine the Business Objectives below to be more executive and Datadog-aligned. Keep the exact same number of objectives, metrics (max 8 words each), and expected results (max 8 words each). Return ONLY valid JSON with the same structure.\n\n${JSON.stringify(analysis, null, 2)}`;
+      const resp = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 1500,
+          messages: [{ role: 'user', content: userMsg }]
+        })
+      });
+      const data = await resp.json();
+      const text = (data.content || [])
+        .filter(b => b.type === 'text')
+        .map(b => b.text)
+        .join('\n');
+      const cleaned = text.replace(/```json|```/g, '').trim();
+      const parsed = JSON.parse(cleaned);
+      if (parsed && Array.isArray(parsed.businessObjectives)) {
+        setAnalysis(parsed);
+        showNotification(isPt ? 'Análise refinada com IA' : 'Analysis refined with AI', 'success');
+      } else {
+        throw new Error('Invalid AI response shape');
+      }
+    } catch (e) {
+      console.warn('[COF] AI refinement failed:', e);
+      showNotification(
+        isPt ? 'Falha ao refinar com IA — análise heurística preservada' : 'AI refinement failed — heuristic analysis preserved',
+        'error'
+      );
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
+  // === Exports ============================================================
+  const customerName = customer?.customerName || customer?.customerId || (isPt ? 'Cliente' : 'Customer');
+  const safeName = String(customerName).replace(/[^a-zA-Z0-9_-]+/g, '_').slice(0, 40) || 'customer';
+
+  // Generate the .pptx in memory and trigger a download. If the iframe sandbox
+  // blocks the auto-click, surface a clickable link as fallback (CARE LIST #5).
+  const exportPPTX = async () => {
+    setPptxBusy(true);
+    setPptxFallback(null);
+    try {
+      const { blob, totalSlides } = await generateCOFPPTX(customer, analysis, lang);
+      const url = URL.createObjectURL(blob);
+      const filename = `COF_${safeName}_${lang}.pptx`;
+      // Try auto-download
+      try {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        // Free URL after a tick — if the click was blocked, the fallback below kicks in
+        setTimeout(() => URL.revokeObjectURL(url), 60_000);
+        showNotification(
+          isPt
+            ? `Download iniciado (${totalSlides} slide${totalSlides > 1 ? 's' : ''})`
+            : `Download started (${totalSlides} slide${totalSlides > 1 ? 's' : ''})`,
+          'success'
+        );
+      } catch (e) {
+        console.warn('[COF] auto-download failed, showing fallback link:', e);
+      }
+      // Always offer the fallback link too — some iframes block silently
+      setPptxFallback({ url, filename, totalSlides });
+    } catch (err) {
+      console.error('[COF] PPTX generation failed:', err);
+      showNotification(
+        isPt
+          ? `Falha ao gerar PPTX: ${err.message || 'erro desconhecido'}`
+          : `PPTX generation failed: ${err.message || 'unknown error'}`,
+        'error'
+      );
+    } finally {
+      setPptxBusy(false);
+    }
+  };
+
+  // Optional advanced exports (kept available behind a "More" disclosure)
+  const exportMarkdown = () => {
+    setExportContent(buildCOFMarkdown(customer, analysis, lang));
+    setExportFilename(`COF_${safeName}_${lang}.md`);
+  };
+  const exportJSON = () => {
+    setExportContent(buildCOFJSON(customer, analysis, lang));
+    setExportFilename(`COF_${safeName}_${lang}.json`);
+  };
+  const exportPrompt = () => {
+    setExportContent(buildCOFPrompt(customer, analysis, lang));
+    setExportFilename(`COF_${safeName}_${lang}_prompt.md`);
+  };
+
+  // === Render ============================================================
+  return (
+    <div>
+      {/* Language mismatch banner */}
+      {langMismatch && (
+        <div style={{
+          background: '#fef3c7',
+          border: '1px solid #fbbf24',
+          borderRadius: '8px',
+          padding: '0.75rem 1rem',
+          marginBottom: '1rem',
+          display: 'flex',
+          alignItems: isMobile ? 'flex-start' : 'center',
+          flexDirection: isMobile ? 'column' : 'row',
+          gap: '0.5rem',
+          fontSize: '0.875rem',
+          color: '#92400e'
+        }}>
+          <span>⚠️ {isPt
+            ? `Avaliação foi feita em outro idioma (${assessmentLang}). Recomendado regenerar.`
+            : `Assessment was made in another language (${assessmentLang}). Recommended to regenerate.`}</span>
+          <button
+            onClick={regenerate}
+            style={{
+              padding: '0.375rem 0.75rem',
+              background: '#92400e',
+              color: '#fef3c7',
+              border: 'none',
+              borderRadius: '6px',
+              fontSize: '0.8125rem',
+              fontWeight: '600',
+              cursor: 'pointer',
+              marginLeft: isMobile ? 0 : 'auto'
+            }}
+          >
+            {isPt ? '🔄 Regenerar' : '🔄 Regenerate'}
+          </button>
+        </div>
+      )}
+
+      {/* Step 1 — Header / context */}
+      <div style={{
+        background: 'linear-gradient(135deg, #f5f3ff 0%, #ede9fe 100%)',
+        borderRadius: '10px',
+        padding: '1.25rem',
+        marginBottom: '1.5rem',
+        border: '1px solid #ddd6fe'
+      }}>
+        <div style={{
+          display: 'flex',
+          alignItems: isMobile ? 'flex-start' : 'center',
+          flexDirection: isMobile ? 'column' : 'row',
+          gap: '0.75rem',
+          marginBottom: '0.75rem'
+        }}>
+          <h3 style={{
+            margin: 0,
+            fontSize: isMobile ? '1.05rem' : '1.125rem',
+            color: '#5b21b6',
+            fontWeight: '700'
+          }}>
+            🎯 {isPt ? 'Etapa 1 — Identificação dos Business Objectives' : 'Step 1 — Identify Business Objectives'}
+          </h3>
+          <div style={{
+            display: 'flex',
+            gap: '0.5rem',
+            marginLeft: isMobile ? 0 : 'auto',
+            flexWrap: 'wrap'
+          }}>
+            <button
+              onClick={regenerate}
+              style={{
+                padding: '0.375rem 0.75rem',
+                background: '#fff',
+                color: '#5b21b6',
+                border: '1px solid #c4b5fd',
+                borderRadius: '6px',
+                fontSize: '0.8125rem',
+                fontWeight: '600',
+                cursor: 'pointer'
+              }}
+            >
+              🔄 {isPt ? 'Regenerar' : 'Regenerate'}
+            </button>
+          </div>
+        </div>
+        <input
+          type="text"
+          value={analysis.contextLine}
+          onChange={(e) => updateContextLine(e.target.value)}
+          style={{
+            width: '100%',
+            padding: '0.5rem 0.75rem',
+            border: '1px solid #c4b5fd',
+            borderRadius: '6px',
+            fontSize: '0.875rem',
+            background: '#fff',
+            color: '#1f2937',
+            fontFamily: 'inherit',
+            boxSizing: 'border-box'
+          }}
+        />
+        <div style={{
+          fontSize: '0.75rem',
+          color: '#6d28d9',
+          marginTop: '0.375rem'
+        }}>
+          {isPt
+            ? 'Linha de contexto que aparecerá no [Description] do slide.'
+            : 'Context line that will appear in the slide [Description].'}
+        </div>
+      </div>
+
+      {/* AI refinement toggle — optional, off by default */}
+      <div style={{
+        display: 'flex',
+        alignItems: isMobile ? 'flex-start' : 'center',
+        flexDirection: isMobile ? 'column' : 'row',
+        gap: '0.5rem',
+        padding: '0.75rem 1rem',
+        background: '#f9fafb',
+        borderRadius: '8px',
+        marginBottom: '1.5rem',
+        border: '1px solid #e5e7eb'
+      }}>
+        <label style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.5rem',
+          fontSize: '0.875rem',
+          cursor: 'pointer',
+          color: '#374151'
+        }}>
+          <input
+            type="checkbox"
+            checked={aiEnabled}
+            onChange={(e) => setAiEnabled(e.target.checked)}
+            style={{ cursor: 'pointer' }}
+          />
+          {isPt ? '✨ Habilitar refinamento com IA' : '✨ Enable AI refinement'}
+        </label>
+        {aiEnabled && (
+          <button
+            onClick={refineWithAI}
+            disabled={aiBusy}
+            style={{
+              padding: '0.375rem 0.75rem',
+              background: aiBusy ? '#d1d5db' : '#632CA6',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '6px',
+              fontSize: '0.8125rem',
+              fontWeight: '600',
+              cursor: aiBusy ? 'wait' : 'pointer',
+              marginLeft: isMobile ? 0 : 'auto'
+            }}
+          >
+            {aiBusy
+              ? (isPt ? '⏳ Refinando...' : '⏳ Refining...')
+              : (isPt ? '✨ Refinar com IA' : '✨ Refine with AI')}
+          </button>
+        )}
+        <span style={{ fontSize: '0.75rem', color: '#6b7280' }}>
+          {isPt ? '(opcional, usa Anthropic API)' : '(optional, uses Anthropic API)'}
+        </span>
+      </div>
+
+      {/* Business Objectives editor */}
+      {analysis.businessObjectives.length === 0 && (
+        <div style={{
+          padding: '1.5rem',
+          background: '#fef2f2',
+          border: '1px solid #fecaca',
+          borderRadius: '8px',
+          color: '#991b1b',
+          marginBottom: '1.5rem'
+        }}>
+          {isPt
+            ? 'Nenhum objetivo identificado. Tente regenerar ou refinar com IA.'
+            : 'No objectives identified. Try regenerating or refining with AI.'}
+        </div>
+      )}
+      {analysis.businessObjectives.map((bo, idx) => (
+        <div key={idx} style={{
+          background: '#fff',
+          border: '1px solid #e5e7eb',
+          borderRadius: '10px',
+          padding: '1.25rem',
+          marginBottom: '1rem',
+          boxShadow: '0 1px 3px rgba(0,0,0,0.04)'
+        }}>
+          <div style={{
+            display: 'flex',
+            alignItems: isMobile ? 'flex-start' : 'center',
+            flexDirection: isMobile ? 'column' : 'row',
+            gap: '0.5rem',
+            marginBottom: '0.75rem'
+          }}>
+            <span style={{
+              background: '#632CA6',
+              color: '#fff',
+              borderRadius: '999px',
+              padding: '0.25rem 0.625rem',
+              fontSize: '0.75rem',
+              fontWeight: '700'
+            }}>
+              {isPt ? `Objetivo ${idx + 1}` : `Objective ${idx + 1}`}
+            </span>
+            <button
+              onClick={() => removeBO(idx)}
+              style={{
+                padding: '0.25rem 0.5rem',
+                background: 'transparent',
+                color: '#dc2626',
+                border: '1px solid #fecaca',
+                borderRadius: '6px',
+                fontSize: '0.75rem',
+                fontWeight: '600',
+                cursor: 'pointer',
+                marginLeft: isMobile ? 0 : 'auto'
+              }}
+            >
+              🗑 {isPt ? 'Remover' : 'Remove'}
+            </button>
+          </div>
+
+          <input
+            type="text"
+            value={bo.title}
+            onChange={(e) => updateBO(idx, { title: e.target.value })}
+            placeholder={isPt ? 'Título do objetivo' : 'Objective title'}
+            style={{
+              width: '100%',
+              padding: '0.5rem 0.75rem',
+              border: '1px solid #d1d5db',
+              borderRadius: '6px',
+              fontSize: '0.9375rem',
+              fontWeight: '600',
+              marginBottom: '0.5rem',
+              fontFamily: 'inherit',
+              boxSizing: 'border-box',
+              wordBreak: 'break-word'
+            }}
+          />
+          <textarea
+            value={bo.description}
+            onChange={(e) => updateBO(idx, { description: e.target.value })}
+            placeholder={isPt ? 'Descrição (2 linhas)' : 'Description (2 lines)'}
+            rows={2}
+            style={{
+              width: '100%',
+              padding: '0.5rem 0.75rem',
+              border: '1px solid #d1d5db',
+              borderRadius: '6px',
+              fontSize: '0.875rem',
+              marginBottom: '1rem',
+              fontFamily: 'inherit',
+              resize: 'vertical',
+              boxSizing: 'border-box'
+            }}
+          />
+
+          {/* Metrics */}
+          <div style={{ marginBottom: '1rem' }}>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              marginBottom: '0.5rem'
+            }}>
+              <strong style={{ fontSize: '0.8125rem', color: '#374151' }}>
+                {isPt ? 'Métricas de Sucesso' : 'Success Metrics'} ({bo.metrics.length}/6)
+              </strong>
+              {bo.metrics.length < 6 && (
+                <button
+                  onClick={() => addMetric(idx)}
+                  style={{
+                    padding: '0.125rem 0.5rem',
+                    background: '#f3f4f6',
+                    color: '#374151',
+                    border: '1px solid #d1d5db',
+                    borderRadius: '6px',
+                    fontSize: '0.75rem',
+                    fontWeight: '600',
+                    cursor: 'pointer'
+                  }}
+                >
+                  + {isPt ? 'Adicionar' : 'Add'}
+                </button>
+              )}
+            </div>
+            {bo.metrics.map((m, mi) => (
+              <div key={mi} style={{ display: 'flex', gap: '0.375rem', marginBottom: '0.25rem' }}>
+                <input
+                  type="text"
+                  value={m}
+                  onChange={(e) => updateMetric(idx, mi, e.target.value)}
+                  style={{
+                    flex: 1,
+                    padding: '0.375rem 0.625rem',
+                    border: '1px solid #e5e7eb',
+                    borderRadius: '6px',
+                    fontSize: '0.8125rem',
+                    fontFamily: 'inherit',
+                    boxSizing: 'border-box'
+                  }}
+                />
+                <button
+                  onClick={() => removeMetric(idx, mi)}
+                  style={{
+                    padding: '0.25rem 0.5rem',
+                    background: 'transparent',
+                    color: '#9ca3af',
+                    border: '1px solid #e5e7eb',
+                    borderRadius: '6px',
+                    fontSize: '0.75rem',
+                    cursor: 'pointer'
+                  }}
+                  title={isPt ? 'Remover' : 'Remove'}
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+
+          {/* Expected Results */}
+          <div>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              marginBottom: '0.5rem'
+            }}>
+              <strong style={{ fontSize: '0.8125rem', color: '#374151' }}>
+                {isPt ? 'Expected Results' : 'Expected Results'} ({bo.expectedResults.length}/5)
+              </strong>
+              {bo.expectedResults.length < 5 && (
+                <button
+                  onClick={() => addResult(idx)}
+                  style={{
+                    padding: '0.125rem 0.5rem',
+                    background: '#f3f4f6',
+                    color: '#374151',
+                    border: '1px solid #d1d5db',
+                    borderRadius: '6px',
+                    fontSize: '0.75rem',
+                    fontWeight: '600',
+                    cursor: 'pointer'
+                  }}
+                >
+                  + {isPt ? 'Adicionar' : 'Add'}
+                </button>
+              )}
+            </div>
+            {bo.expectedResults.map((r, ri) => (
+              <div key={ri} style={{ display: 'flex', gap: '0.375rem', marginBottom: '0.25rem' }}>
+                <input
+                  type="text"
+                  value={r}
+                  onChange={(e) => updateResult(idx, ri, e.target.value)}
+                  style={{
+                    flex: 1,
+                    padding: '0.375rem 0.625rem',
+                    border: '1px solid #e5e7eb',
+                    borderRadius: '6px',
+                    fontSize: '0.8125rem',
+                    fontFamily: 'inherit',
+                    boxSizing: 'border-box'
+                  }}
+                />
+                <button
+                  onClick={() => removeResult(idx, ri)}
+                  style={{
+                    padding: '0.25rem 0.5rem',
+                    background: 'transparent',
+                    color: '#9ca3af',
+                    border: '1px solid #e5e7eb',
+                    borderRadius: '6px',
+                    fontSize: '0.75rem',
+                    cursor: 'pointer'
+                  }}
+                  title={isPt ? 'Remover' : 'Remove'}
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+
+      {/* Step 2 — Export */}
+      <div style={{
+        background: '#1f2937',
+        borderRadius: '10px',
+        padding: '1.25rem',
+        color: '#fff',
+        marginTop: '1.5rem'
+      }}>
+        <h3 style={{
+          margin: '0 0 0.75rem 0',
+          fontSize: isMobile ? '1.05rem' : '1.125rem',
+          color: '#fff',
+          fontWeight: '700'
+        }}>
+          📤 {isPt ? 'Etapa 2 — Baixar PPTX' : 'Step 2 — Download PPTX'}
+        </h3>
+        <p style={{
+          margin: '0 0 1rem 0',
+          fontSize: '0.8125rem',
+          color: '#d1d5db',
+          lineHeight: 1.5
+        }}>
+          {isPt
+            ? `${analysis.businessObjectives.length} objetivo(s) identificado(s). O arquivo terá ${Math.max(1, Math.ceil(analysis.businessObjectives.length / 3))} slide(s), com 3 objetivos por slide e o template Datadog 100% preservado.`
+            : `${analysis.businessObjectives.length} objective(s) identified. The file will have ${Math.max(1, Math.ceil(analysis.businessObjectives.length / 3))} slide(s), with 3 objectives per slide and the Datadog template 100% preserved.`}
+        </p>
+
+        {/* Primary action: download PPTX */}
+        <button
+          onClick={exportPPTX}
+          disabled={pptxBusy || analysis.businessObjectives.length === 0}
+          style={{
+            width: '100%',
+            padding: '1rem 1.25rem',
+            background: pptxBusy || analysis.businessObjectives.length === 0 ? '#4b5563' : '#632CA6',
+            color: '#fff',
+            border: 'none',
+            borderRadius: '8px',
+            fontSize: '1rem',
+            fontWeight: '700',
+            cursor: pptxBusy || analysis.businessObjectives.length === 0 ? 'not-allowed' : 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '0.5rem',
+            transition: 'background 150ms ease'
+          }}
+          onMouseEnter={(e) => {
+            if (!pptxBusy && analysis.businessObjectives.length > 0) {
+              e.currentTarget.style.background = '#7c3aed';
+            }
+          }}
+          onMouseLeave={(e) => {
+            if (!pptxBusy && analysis.businessObjectives.length > 0) {
+              e.currentTarget.style.background = '#632CA6';
+            }
+          }}
+        >
+          {pptxBusy
+            ? (isPt ? '⏳ Gerando PPTX...' : '⏳ Generating PPTX...')
+            : (isPt ? '📥 Baixar PPTX preenchido' : '📥 Download filled PPTX')}
+        </button>
+
+        {/* Fallback link — appears after generation in case the auto-download was blocked */}
+        {pptxFallback && (
+          <div style={{
+            marginTop: '0.75rem',
+            padding: '0.75rem 0.875rem',
+            background: 'rgba(16, 185, 129, 0.15)',
+            borderLeft: '3px solid #10b981',
+            borderRadius: '4px',
+            fontSize: '0.8125rem',
+            color: '#a7f3d0',
+            lineHeight: 1.5
+          }}>
+            ✅ {isPt
+              ? `${pptxFallback.totalSlides} slide(s) gerado(s). Se o download não iniciou automaticamente, `
+              : `${pptxFallback.totalSlides} slide(s) generated. If the download didn't start automatically, `}
+            <a
+              href={pptxFallback.url}
+              download={pptxFallback.filename}
+              style={{ color: '#fff', fontWeight: '600', textDecoration: 'underline' }}
+            >
+              {isPt ? 'clique aqui para baixar' : 'click here to download'}
+            </a>
+            {' '}({pptxFallback.filename}).
+          </div>
+        )}
+
+        {/* "More formats" disclosure — keep Markdown / JSON / Prompt for power users */}
+        <div style={{ marginTop: '1rem' }}>
+          <button
+            onClick={() => setShowMoreExports(s => !s)}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: '#a78bfa',
+              fontSize: '0.8125rem',
+              fontWeight: '500',
+              cursor: 'pointer',
+              padding: '0.25rem 0',
+              textDecoration: 'underline'
+            }}
+          >
+            {showMoreExports
+              ? (isPt ? '▾ Ocultar formatos adicionais' : '▾ Hide additional formats')
+              : (isPt ? '▸ Mais formatos (Markdown, JSON, Prompt)' : '▸ More formats (Markdown, JSON, Prompt)')}
+          </button>
+          {showMoreExports && (
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)',
+              gap: '0.5rem',
+              marginTop: '0.5rem'
+            }}>
+              <button
+                onClick={exportMarkdown}
+                disabled={analysis.businessObjectives.length === 0}
+                style={{
+                  padding: '0.5rem 0.75rem',
+                  background: 'rgba(99, 44, 166, 0.25)',
+                  color: '#e9d5ff',
+                  border: '1px solid rgba(167, 139, 250, 0.4)',
+                  borderRadius: '6px',
+                  fontSize: '0.8125rem',
+                  fontWeight: '500',
+                  cursor: analysis.businessObjectives.length === 0 ? 'not-allowed' : 'pointer',
+                  opacity: analysis.businessObjectives.length === 0 ? 0.5 : 1
+                }}
+              >
+                📝 Markdown
+              </button>
+              <button
+                onClick={exportJSON}
+                disabled={analysis.businessObjectives.length === 0}
+                style={{
+                  padding: '0.5rem 0.75rem',
+                  background: 'rgba(14, 165, 233, 0.25)',
+                  color: '#bae6fd',
+                  border: '1px solid rgba(56, 189, 248, 0.4)',
+                  borderRadius: '6px',
+                  fontSize: '0.8125rem',
+                  fontWeight: '500',
+                  cursor: analysis.businessObjectives.length === 0 ? 'not-allowed' : 'pointer',
+                  opacity: analysis.businessObjectives.length === 0 ? 0.5 : 1
+                }}
+              >
+                🔧 JSON
+              </button>
+              <button
+                onClick={exportPrompt}
+                disabled={analysis.businessObjectives.length === 0}
+                style={{
+                  padding: '0.5rem 0.75rem',
+                  background: 'rgba(16, 185, 129, 0.25)',
+                  color: '#a7f3d0',
+                  border: '1px solid rgba(52, 211, 153, 0.4)',
+                  borderRadius: '6px',
+                  fontSize: '0.8125rem',
+                  fontWeight: '500',
+                  cursor: analysis.businessObjectives.length === 0 ? 'not-allowed' : 'pointer',
+                  opacity: analysis.businessObjectives.length === 0 ? 0.5 : 1
+                }}
+              >
+                🤖 Prompt
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Export modal (reusing ExportPlanModal) */}
+      {exportContent !== null && (
+        <ExportPlanModal
+          content={exportContent}
+          filename={exportFilename}
+          isPt={isPt}
+          t={t}
+          onClose={() => setExportContent(null)}
+          showNotification={showNotification}
+        />
+      )}
+    </div>
+  );
+}
+
+
 // Small stat card used in the action plan summary
 function ActionPlanStatCard({ label, value, total, color }) {
   return (
@@ -15569,10 +18049,17 @@ function ActionPlanItemEditor({ item, t, isPt, latestData, onSave, onCancel }) {
 function CustomerDetailModal({ customer, onClose, onDataChange, t }) {
   // Get latest assessment for dimension data
   const latest = customer.latestAssessment;
+  const isMobile = useIsMobile();
   
   // v40: Active tab in the modal — 'overview' | 'plan'
   // Default to 'overview' so existing behavior is preserved.
   const [activeTab, setActiveTab] = useState('overview');
+  
+  // v42: Customer metadata (industry, tier) — used for cohort filtering in benchmarks.
+  // Loaded once on mount, persisted to localStorage on save.
+  const [customerMeta, setCustomerMeta] = useState(() => 
+    loadCustomerMeta(customer.customerId) || { industry: null, tier: null }
+  );
   
   // Edit mode states
   const [isEditingCustomer, setIsEditingCustomer] = useState(false);
@@ -16160,12 +18647,12 @@ function CustomerDetailModal({ customer, onClose, onDataChange, t }) {
         {/* Header with gradient */}
         <div style={{
           background: `linear-gradient(135deg, #632CA6 0%, #9560ca 100%)`,
-          padding: '2rem',
+          padding: isMobile ? '1.25rem' : '2rem',
           color: 'white',
           position: 'relative'
         }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', gap: '1rem' }}>
-            <div style={{ flex: 1 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', gap: '1rem', flexDirection: isMobile ? 'column' : 'row' }}>
+            <div style={{ flex: 1, width: '100%' }}>
               {isEditingCustomer ? (
                 <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '0.75rem' }}>
                   <input
@@ -16227,8 +18714,8 @@ function CustomerDetailModal({ customer, onClose, onDataChange, t }) {
                   </button>
                 </div>
               ) : (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
-                  <h2 style={{ margin: 0, fontSize: '1.75rem', fontWeight: '700' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem', flexWrap: 'wrap' }}>
+                  <h2 style={{ margin: 0, fontSize: isMobile ? '1.25rem' : '1.75rem', fontWeight: '700', wordBreak: 'break-word' }}>
                     {customer.latestAssessment?.teamName || customer.customerId}
                   </h2>
                   <button
@@ -16271,6 +18758,86 @@ function CustomerDetailModal({ customer, onClose, onDataChange, t }) {
                 <span>{customer.assessmentCount} {customer.assessmentCount > 1 ? t.assessments : t.assessment}</span>
                 <span>•</span>
                 <span>{customer.orgUnits.length} {customer.orgUnits.length > 1 ? t.units : t.unit}</span>
+              </div>
+              
+              {/* v42: Industry & Tier classification — inline dropdowns
+                  Used for cohort filtering in the Benchmarks Executive view. */}
+              <div style={{
+                display: 'flex',
+                gap: '0.625rem',
+                marginTop: '0.875rem',
+                flexWrap: 'wrap',
+                alignItems: 'center'
+              }}>
+                <span style={{
+                  fontSize: '0.6875rem',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em',
+                  opacity: 0.7,
+                  fontWeight: '600'
+                }}>
+                  {t.locale === 'pt-BR' ? 'Classificação:' : 'Classification:'}
+                </span>
+                <select
+                  value={customerMeta.industry || ''}
+                  onChange={(e) => {
+                    const next = { ...customerMeta, industry: e.target.value || null };
+                    setCustomerMeta(next);
+                    saveCustomerMeta(customer.customerId, next);
+                  }}
+                  style={{
+                    background: 'rgba(255,255,255,0.15)',
+                    color: 'white',
+                    border: '1px solid rgba(255,255,255,0.3)',
+                    borderRadius: '6px',
+                    padding: isMobile ? '0.4rem 0.5rem' : '0.25rem 0.5rem',
+                    fontSize: '0.75rem',
+                    cursor: 'pointer',
+                    outline: 'none',
+                    flex: isMobile ? 1 : 'none',
+                    minWidth: isMobile ? '0' : 'auto'
+                  }}
+                  title={t.locale === 'pt-BR' ? 'Indústria' : 'Industry'}
+                >
+                  <option value="" style={{ color: '#1f2937' }}>
+                    {t.locale === 'pt-BR' ? '— Indústria —' : '— Industry —'}
+                  </option>
+                  {INDUSTRY_OPTIONS.map(opt => (
+                    <option key={opt.key} value={opt.key} style={{ color: '#1f2937' }}>
+                      {t.locale === 'pt-BR' ? opt.pt : opt.en}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={customerMeta.tier || ''}
+                  onChange={(e) => {
+                    const next = { ...customerMeta, tier: e.target.value || null };
+                    setCustomerMeta(next);
+                    saveCustomerMeta(customer.customerId, next);
+                  }}
+                  style={{
+                    background: 'rgba(255,255,255,0.15)',
+                    color: 'white',
+                    border: '1px solid rgba(255,255,255,0.3)',
+                    borderRadius: '6px',
+                    padding: isMobile ? '0.4rem 0.5rem' : '0.25rem 0.5rem',
+                    fontSize: '0.75rem',
+                    cursor: 'pointer',
+                    outline: 'none',
+                    flex: isMobile ? 1 : 'none',
+                    minWidth: isMobile ? '0' : 'auto'
+                  }}
+                  title={t.locale === 'pt-BR' ? 'Tier' : 'Tier'}
+                >
+                  <option value="" style={{ color: '#1f2937' }}>
+                    {t.locale === 'pt-BR' ? '— Tier —' : '— Tier —'}
+                  </option>
+                  {TIER_OPTIONS.map(opt => (
+                    <option key={opt.key} value={opt.key} style={{ color: '#1f2937' }}>
+                      {t.locale === 'pt-BR' ? opt.pt : opt.en}
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
             <button
@@ -16341,14 +18908,31 @@ function CustomerDetailModal({ customer, onClose, onDataChange, t }) {
             >
               📋 {t.actionPlanTab}
             </button>
+            {/* v45: Generate COF tab */}
+            <button
+              onClick={() => setActiveTab('cof')}
+              style={{
+                padding: '0.625rem 1rem',
+                border: 'none',
+                background: 'transparent',
+                borderBottom: activeTab === 'cof' ? '2px solid #632CA6' : '2px solid transparent',
+                color: activeTab === 'cof' ? '#632CA6' : '#6b7280',
+                fontWeight: activeTab === 'cof' ? '600' : '500',
+                fontSize: '0.9375rem',
+                cursor: 'pointer',
+                marginBottom: '-1px'
+              }}
+            >
+              🎯 {t.locale === 'pt-BR' ? 'Gerar COF' : 'Generate COF'}
+            </button>
           </div>
           
           {/* v40: Overview tab content (existing behavior) */}
           {activeTab === 'overview' && (<>
-          {/* KPI Cards */}
+          {/* KPI Cards — v43: auto-fit for mobile */}
           <div style={{ 
             display: 'grid', 
-            gridTemplateColumns: 'repeat(3, 1fr)', 
+            gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', 
             gap: '1rem',
             marginBottom: '2rem'
           }}>
@@ -16604,7 +19188,7 @@ function CustomerDetailModal({ customer, onClose, onDataChange, t }) {
                     paddingTop: '0.875rem', 
                     borderTop: '1px solid #f3f4f6',
                     display: 'grid',
-                    gridTemplateColumns: 'repeat(5, 1fr)',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(80px, 1fr))',
                     gap: '0.25rem',
                     fontSize: '0.75rem'
                   }}>
@@ -17036,6 +19620,16 @@ function CustomerDetailModal({ customer, onClose, onDataChange, t }) {
           {/* v40: Action Plan tab content */}
           {activeTab === 'plan' && (
             <ActionPlanTab
+              customer={customer}
+              latestAssessment={latest}
+              t={t}
+              showNotification={showNotification}
+            />
+          )}
+
+          {/* v45: Generate COF tab content */}
+          {activeTab === 'cof' && (
+            <GenerateCOFTab
               customer={customer}
               latestAssessment={latest}
               t={t}
